@@ -1,0 +1,15 @@
+# GeoCoin production profile
+# Install as <data-dir>/<network>/geocoin.conf (for the production network:
+# /var/lib/geocoin/degree/geocoin.conf).
+config-version=1
+no-auto-connect=0
+archive=0
+activation-manifest=activation-manifest.json
+
+# Keep wallet/admin RPC private and bound to loopback.
+addnode=seed1.geocoin.network:3030
+addnode=seed2.geocoin.network:3030
+
+# Network, ports, RPC credentials and data-dir are runtime-only CLI options.
+# Example service-level flags:
+# geocoin-node --data-dir /var/lib/geocoin --network degree --archive --rpc --rpc-bind 127.0.0.1 --rpc-user geocoin --rpc-pass-file /etc/geocoin/rpc.pass --rpc-miner-user miner --rpc-miner-pass-file /etc/geocoin/rpc-miner.pass --status-interval 30

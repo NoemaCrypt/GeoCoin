@@ -1,0 +1,4 @@
+module CLibGeo {
+    header "libgeo.h"
+    export *
+}

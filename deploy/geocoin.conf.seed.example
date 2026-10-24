@@ -1,0 +1,8 @@
+# GeoCoin public seed node example.
+# Copy to /var/lib/geocoin/degree/geocoin.conf. Runtime-only settings such as
+# network, data-dir, listen ports and RPC credentials belong in ExecStart.
+config-version=1
+archive=1
+activation-manifest=activation-manifest.json
+
+# Add audit and operational logging here if your environment requires it.

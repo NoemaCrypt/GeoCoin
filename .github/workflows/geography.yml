@@ -1,0 +1,97 @@
+name: Geographic consensus v1
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-gcc-x86_64
+            cc: gcc
+            cxx: g++
+          - os: ubuntu-24.04
+            platform: linux-clang-x86_64
+            cc: clang
+            cxx: clang++
+          - os: ubuntu-24.04-arm
+            platform: linux-gcc-arm64
+            cc: gcc
+            cxx: g++
+          - os: windows-2022
+            platform: windows-clang-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/bootstrap-linux.sh --profile dev
+      - name: Build Linux conformance tests
+        if: runner.os == 'Linux'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S . -B out/build/geography-ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DBUILD_QT_GUI=OFF -DBUILD_TOOLS=OFF
+          cmake --build out/build/geography-ci --target test_geodesy --parallel 4
+          ctest --test-dir out/build/geography-ci -R '^test_geodesy$' --output-on-failure
+      - name: Bootstrap pinned vcpkg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          git clone --no-checkout https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP/vcpkg"
+          git -C "$env:RUNNER_TEMP/vcpkg" checkout --detach $baseline
+          & "$env:RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat"
+          "VCPKG_ROOT=$env:RUNNER_TEMP/vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build Windows conformance tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake --preset windows-clang-static-release-headless -DBUILD_TESTS=ON -DBUILD_TOOLS=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build out/build/windows-clang-static-release --config Release --target test_geodesy --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir out/build/windows-clang-static-release -C Release -R '^test_geodesy$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Export Linux fingerprint
+        if: runner.os == 'Linux'
+        run: python scripts/check_geo_fingerprints.py --binary out/build/geography-ci/test_geodesy --platform '${{ matrix.platform }}' --output 'fingerprints/${{ matrix.platform }}.json'
+      - name: Export Windows fingerprint
+        if: runner.os == 'Windows'
+        run: python scripts/check_geo_fingerprints.py --binary out/build/windows-clang-static-release/Release/test_geodesy.exe --platform '${{ matrix.platform }}' --output 'fingerprints/${{ matrix.platform }}.json'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: geography-${{ matrix.platform }}
+          path: fingerprints/*.json
+          if-no-files-found: error
+  compare:
+    needs: conformance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: geography-*
+          path: fingerprints
+      - name: Compare every required platform with the frozen v1 corpus
+        run: >-
+          python3 scripts/check_geo_fingerprints.py --directory fingerprints
+          --require-platform linux-gcc-x86_64 --require-platform linux-clang-x86_64
+          --require-platform linux-gcc-arm64 --require-platform windows-clang-x86_64

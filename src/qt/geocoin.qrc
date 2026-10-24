@@ -1,0 +1,42 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/images">
+        <file alias="background">res/images/background.png</file>
+        <file alias="background_dark">res/images/background_dark.png</file>
+    </qresource>
+    <qresource prefix="/translations">
+        <file alias="geocoin_en.qm">translations/geocoin_en.qm</file>
+        <file alias="geocoin_ru.qm">translations/geocoin_ru.qm</file>
+    </qresource>
+    <qresource prefix="/icons">
+        <!-- Main icons -->
+        <file alias="geocoin">res/icons/geocoin.png</file>
+        <file alias="spin_up_dark">res/icons/spin_up_dark.xpm</file>
+        <file alias="spin_down_dark">res/icons/spin_down_dark.xpm</file>
+        <file alias="spin_up_light">res/icons/spin_up_light.xpm</file>
+        <file alias="spin_down_light">res/icons/spin_down_light.xpm</file>
+        <!-- <file alias="about">res/icons/about.png</file> -->
+        <!-- <file alias="quit">res/icons/quit.png</file> -->
+
+        <!-- Page icons -->
+        <!-- <file alias="overview">res/icons/overview.png</file> -->
+        <!-- <file alias="send">res/icons/send.png</file> -->
+        <!-- <file alias="receive">res/icons/receiving_addresses.png</file> -->
+        <!-- <file alias="history">res/icons/history.png</file> -->
+        <!-- <file alias="mining">res/icons/mining.png</file> -->
+
+        <!-- Status icons -->
+        <!-- <file alias="connect0">res/icons/connect0.png</file> -->
+        <!-- <file alias="connect1">res/icons/connect1.png</file> -->
+        <!-- <file alias="connect2">res/icons/connect2.png</file> -->
+        <!-- <file alias="connect3">res/icons/connect3.png</file> -->
+        <!-- <file alias="connect4">res/icons/connect4.png</file> -->
+        <!-- <file alias="synced">res/icons/synced.png</file> -->
+
+        <!-- Other icons -->
+        <!-- <file alias="lock_closed">res/icons/lock_closed.png</file> -->
+        <!-- <file alias="filesave">res/icons/filesave.png</file> -->
+        <!-- <file alias="key">res/icons/key.png</file> -->
+        <!-- <file alias="options">res/icons/options.png</file> -->
+    </qresource>
+</RCC>

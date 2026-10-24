@@ -1,0 +1,8 @@
+foreach(_fuzzer consensus p2p rpc)
+    add_executable(fuzz_${_fuzzer} tests/fuzz/fuzz_${_fuzzer}.cpp)
+    target_link_options(fuzz_${_fuzzer} PRIVATE -fsanitize=fuzzer)
+endforeach()
+target_link_libraries(fuzz_consensus PRIVATE geocoin_consensus)
+target_link_libraries(fuzz_p2p PRIVATE geocoin_network_transport)
+target_link_libraries(fuzz_rpc PRIVATE geocoin_rpc)
+add_custom_target(geocoin_fuzzers DEPENDS fuzz_consensus fuzz_p2p fuzz_rpc)

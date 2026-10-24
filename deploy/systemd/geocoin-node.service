@@ -1,0 +1,28 @@
+[Unit]
+Description=GeoCoin Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=geocoin
+Group=geocoin
+WorkingDirectory=/var/lib/geocoin
+UMask=0077
+ExecStart=/opt/geocoin/geocoin-node --data-dir /var/lib/geocoin --network degree --archive --rpc --rpc-bind 127.0.0.1 --rpc-user geocoin --rpc-pass-file /etc/geocoin/rpc.pass
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/geocoin
+
+[Install]
+WantedBy=multi-user.target

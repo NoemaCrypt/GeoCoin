@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "project": "GeoCoin",
+  "network": "degree",
+  "signoff_mode": "external",
+  "external_audit": {
+    "required": true,
+    "signed_off": false,
+    "auditor": "",
+    "report_id": "",
+    "report_url": "",
+    "scope": [
+      "consensus",
+      "state",
+      "wallet",
+      "rpc",
+      "p2p"
+    ],
+    "audited_commit": "",
+    "signed_at_utc": "",
+    "status": "pending"
+  },
+  "internal_signoff": {
+    "signed_off": false,
+    "signers": [
+      "",
+      ""
+    ],
+    "audited_commit": "",
+    "signed_at_utc": "",
+    "status": "pending"
+  }
+}

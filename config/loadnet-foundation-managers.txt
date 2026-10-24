@@ -1,0 +1,8 @@
+# degree-load foundation managers (deterministic public test fixtures)
+# Quorum: 4-of-4
+# Foundation multisig: GEOM3EuJq9xB1xXoUjDJ6MK6DR28HhxYseseC2
+# NEVER use these fixtures on degree or on any network carrying value.
+GEO1P3rsV9e3HpE8yfR8VPtjNqwrntcNH3ZKk
+GEO1K9Juep1tJoUGkSdhmGiPhvgqc5WFoyAo8
+GEO1LiZwqv6oqA297U6CN76erHUpDJQFcBja7
+GEO1N4hgEstUmnPUBh7VJs9vdEebnVokALf3R
