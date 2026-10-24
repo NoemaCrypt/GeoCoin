@@ -27,7 +27,7 @@ jobs:
     env:
       UPLOAD_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_tag }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -66,7 +66,7 @@ jobs:
           - os: windows-2022
             platform: windows
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           submodules: recursive
@@ -223,7 +223,7 @@ jobs:
       UPLOAD_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_tag }}
       SOURCE_SHA: ${{ needs.resolve-source.outputs.sha }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           submodules: recursive
