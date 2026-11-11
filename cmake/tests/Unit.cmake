@@ -509,6 +509,12 @@ if(BUILD_QT_GUI)
         TIMEOUT 180
         LABELS "wallet;gui"
     )
+    if(WIN32 AND GEOCOIN_WINDOWS_STATIC_RELEASE)
+        foreach(_gui_test test_gui_wallet_persistence test_gui_contract)
+            qt5_import_plugins(${_gui_test} INCLUDE Qt5::QOffscreenIntegrationPlugin)
+            target_link_libraries(${_gui_test} PRIVATE Qt5::QOffscreenIntegrationPlugin)
+        endforeach()
+    endif()
 endif()
 
 add_executable(test_active_chain_index tests/test_active_chain_index.cpp)
