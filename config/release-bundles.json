@@ -4,6 +4,7 @@
     "geographiclib/LICENSE.txt": "licenses/GeographicLib.txt",
     "third_party/boost-geometry.LICENSE.txt": "licenses/Boost.txt",
     "liboqs/LICENSE.txt": "licenses/liboqs.txt",
+    "liboqs/src/sig/falcon/pqclean_falcon-512_clean/LICENSE": "licenses/Falcon.txt",
     "third_party/rocksdb.LICENSE.txt": "licenses/RocksDB.txt"
   },
   "profiles": {
