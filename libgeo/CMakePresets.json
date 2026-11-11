@@ -1,0 +1,203 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "linux-release",
+      "displayName": "libgeo Linux Release",
+      "description": "Reproducible Linux release build for the C SDK",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/linux-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "libgeo Linux Debug",
+      "description": "Debug-friendly Linux build for the C SDK",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/linux-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "libgeo Windows Release",
+      "description": "Reproducible Windows release build for the C SDK",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/out/build/windows-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "x64"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_DIR": "${sourceDir}/..",
+        "VCPKG_BUILD_TYPE": "release",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "windows-debug",
+      "displayName": "libgeo Windows Debug",
+      "description": "Debug-friendly Windows build for the C SDK",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/out/build/windows-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "x64"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_DIR": "${sourceDir}/..",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "windows-clang-release",
+      "displayName": "libgeo Windows Clang Release",
+      "description": "Reproducible Windows release build for the C SDK via ClangCL",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/out/build/windows-clang-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "x64"
+      },
+      "toolset": {
+        "value": "ClangCL"
+      },
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR};$env{VCPKG_INSTALLED_X64_WINDOWS}",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "windows-clang-static-release",
+      "displayName": "libgeo Windows Clang Static Release",
+      "description": "Windows SDK DLL with static dependencies via ClangCL and vcpkg x64-windows-static",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/out/build/windows-clang-static-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "x64"
+      },
+      "toolset": {
+        "value": "ClangCL"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_DIR": "${sourceDir}/..",
+        "VCPKG_BUILD_TYPE": "release",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/../scripts/vcpkg-triplets",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "BUILD_SHARED_LIBS": "OFF",
+        "GEOCOIN_WINDOWS_STATIC_RELEASE": "ON",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "windows-clang-debug",
+      "displayName": "libgeo Windows Clang Debug",
+      "description": "Debug-friendly Windows build for the C SDK via ClangCL",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/out/build/windows-clang-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "x64"
+      },
+      "toolset": {
+        "value": "ClangCL"
+      },
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR};$env{VCPKG_INSTALLED_X64_WINDOWS}",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-clang-release",
+      "configurePreset": "windows-clang-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-clang-static-release",
+      "configurePreset": "windows-clang-static-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-clang-debug",
+      "configurePreset": "windows-clang-debug",
+      "configuration": "Debug"
+    }
+  ]
+}

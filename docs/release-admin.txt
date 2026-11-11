@@ -1,0 +1,30 @@
+GeoCoin — инструменты администратора / Administration tools
+
+Linux: ./geocoin-node, ./geocoin-db, ./geocoin-rpc-miner.
+Windows: bin\geocoin-node.exe, bin\geocoin-db.exe, bin\geocoin-rpc-miner.exe.
+Запускайте команды с --help для описания поддерживаемых параметров.
+Use --help for the options supported by each command.
+
+В deploy находятся примеры конфигурации ноды и seed-ноды, systemd unit,
+настройка firewall и шаблон sign-off. Адаптируйте пути и пользователя службы
+перед установкой. Конфигурация production находится в config.
+deploy contains node/seed configuration examples, a systemd unit, firewall
+setup and a sign-off template. Adjust service user and paths before installing.
+config contains the production admission manifest template.
+
+Не запускайте несколько процессов с одной папкой данных.
+Для согласованных backup/restore используйте geocoin-db по его инструкции
+--help. Завершайте ноду перед операциями, требующими эксклюзивного доступа.
+Резервная копия БД и резервная копия кошелька — отдельные операции.
+Do not share a data directory between running processes. Use geocoin-db
+for supported database check/backup/restore operations. Stop the node when
+exclusive access is required. Back up the wallet separately from the database.
+
+RPC по умолчанию должен оставаться локальным. Для CPU-майнера используйте
+отдельные учётные данные роли miner. Секреты не входят в этот архив:
+создавайте их на целевой машине.
+Keep RPC local by default. Give the CPU RPC miner its own miner credentials.
+Create credentials on the target host; this package contains no credentials.
+
+Лицензии зависимостей находятся в licenses. Проверяйте архив по SHA256SUMS.txt.
+Dependency notices are in licenses. Verify the archive using SHA256SUMS.txt.

@@ -1,0 +1,95 @@
+name: GeoCoin extended validation
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [consensus, p2p, rpc]
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Bootstrap dependencies
+        run: bash scripts/bootstrap-ubuntu-22.04.sh
+      - name: Configure fuzzing
+        run: >-
+          cmake -S . -B out/build/fuzz -G Ninja
+          -D CMAKE_BUILD_TYPE=Debug -D BUILD_TESTS=OFF -D BUILD_TOOLS=OFF -D BUILD_QT_GUI=OFF
+          -D BUILD_FUZZERS=ON -D GEOCOIN_SANITIZER=address-undefined
+      - name: Build instrumented parsers
+        run: cmake --build out/build/fuzz --parallel 4 --target fuzz_${{ matrix.target }}
+      - name: Fuzz for 15 minutes
+        run: |
+          mkdir -p fuzz-results/artifacts fuzz-results/corpus
+          cp tests/fuzz/corpus/${{ matrix.target }}/* fuzz-results/corpus/
+          out/build/fuzz/fuzz_${{ matrix.target }} fuzz-results/corpus \
+            -max_total_time=900 -max_len=65536 -timeout=10 -rss_limit_mb=2048 \
+            -artifact_prefix=fuzz-results/artifacts/ 2>&1 | tee fuzz-results/run.log
+      - name: Preserve corpus and reproducers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz-results/
+          retention-days: 14
+
+  localnet:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Bootstrap dependencies
+        run: bash scripts/bootstrap-ubuntu-22.04.sh
+      - name: Configure CPU localnet
+        run: >-
+          cmake -S . -B out/build/localnet -G Ninja -D CMAKE_BUILD_TYPE=Release
+          -D BUILD_TESTS=ON -D BUILD_QT_GUI=OFF
+          -D GEOCOIN_ENABLE_CPU_SIDECHAIN_LOCALNET_TESTS=ON
+          -D GEOCOIN_ENABLE_CPU_MULTISIG_LOCALNET_TESTS=ON
+          -D GEOCOIN_ENABLE_CPU_NFT_LOCALNET_TESTS=ON
+      - name: Build node, miners and fixture tools
+        run: cmake --build out/build/localnet --parallel 4
+      - name: Run sidechain, NFT and multisig scenarios
+        run: ctest --test-dir out/build/localnet --output-on-failure -L cpu
+      - name: Test and build loadnet harness
+        run: |
+          cargo test --locked --manifest-path tools/loadnet-stress/Cargo.toml
+          cargo build --locked --release --manifest-path tools/loadnet-stress/Cargo.toml
+      - name: Run loadnet with crash recovery and reorg
+        run: >-
+          tools/loadnet-stress/target/release/geocoin-loadnet-stress
+          --node-binary out/build/localnet/geocoin-node
+          --miner-binary out/build/localnet/geocoin-rpc-miner
+          --signing-tool out/build/localnet/sidechain_test_tool
+          --work-dir loadnet-results
+          --nodes 4 --accounts 1000 --workers 16 --rounds 3 --live-features true
+      - name: Preserve validation reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: localnet-reports
+          path: |
+            out/build/localnet/Testing/Temporary/
+            loadnet-results/report.json
+            loadnet-results/node-*/node.log
+          retention-days: 14

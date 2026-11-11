@@ -1,0 +1,41 @@
+GeoCoin — кошелёк, нода и майнинг / Wallet, node and mining
+
+ЗАПУСК / START
+Linux: распакуйте весь архив и запустите ./geocoin-core.
+Windows: распакуйте весь архив и запустите bin\geocoin-core.exe.
+Кошелёк запускает локальную ноду самостоятельно. Дождитесь синхронизации.
+Launch the wallet and wait for synchronization. The wallet runs its own node.
+Keep bin, lib and plugins together when moving the application.
+
+НОДА / NODE
+Для работы без интерфейса: Linux ./geocoin-node; Windows bin\geocoin-node.exe.
+Не запускайте две ноды с одной папкой данных одновременно.
+For a node without the wallet UI, use geocoin-node. Do not share one data
+directory between running processes. Server templates and database maintenance
+tools are distributed separately in the admin package.
+
+КОШЕЛЁК И РЕЗЕРВНАЯ КОПИЯ / WALLET BACKUP
+Задайте пароль кошелька и используйте его функцию резервного копирования.
+Храните копию отдельно от компьютера, вместе с необходимым для открытия паролем.
+Не перезаписывайте существующий кошелёк при установке новой сборки.
+Set a wallet password and use the wallet backup function. Keep a backup and
+the password needed to open it in a separate, protected location.
+Updating application files must not replace your existing wallet or node data.
+
+МАЙНИНГ / MINING
+CPU-майнинг доступен в кошельке. geocoin-rpc-miner — отдельный CPU-майнер
+для подключения к RPC ноды; параметры подключения смотрите в его --help.
+Для него нужны учётные данные роли miner.
+GPU-майнинг доступен, если в архиве есть geocoin-gpu-miner.
+Требуется установленный драйвер видеокарты. NVIDIA использует CUDA,
+AMD — HIP или OpenCL, другие поддерживаемые устройства — OpenCL.
+CPU mining is available in the wallet. geocoin-rpc-miner supports CPU mining
+against a node's RPC using miner credentials; see --help for connection options.
+GPU mining is available when geocoin-gpu-miner is included. Install your GPU
+vendor's driver: CUDA for NVIDIA, HIP/OpenCL for AMD, OpenCL where supported.
+
+ОБНОВЛЕНИЕ / UPDATE
+Завершите работу приложения, замените файлы программы и запустите снова.
+Не удаляйте папку данных. Сверяйте архив с опубликованным SHA256SUMS.txt.
+Close the application before replacing its files. Preserve the data directory.
+Verify the downloaded archive against the published SHA256SUMS.txt.

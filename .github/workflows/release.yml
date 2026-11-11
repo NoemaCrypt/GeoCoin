@@ -1,0 +1,378 @@
+name: GeoCoin Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Build and test this existing tag into a draft release. Leave empty to build workflow artifacts only.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: geocoin-release-${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_tag || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-source:
+    name: Select release source commit
+    runs-on: ubuntu-22.04
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    env:
+      UPLOAD_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'push' && github.event.repository.default_branch || github.workflow_sha }}
+      - name: Resolve the exact tag commit
+        id: source
+        run: python3 scripts/resolve_release_source.py
+      - name: Stage current release tooling
+        shell: bash
+        run: |
+          mkdir -p out/release-tooling
+          cp scripts/resolve_release_source.py out/release-tooling/
+          cp scripts/generate_release_manifest.py out/release-tooling/
+          cp scripts/generate_checksums.py out/release-tooling/
+          cp scripts/generate_sbom.py out/release-tooling/
+      - name: Upload current release tooling
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-tooling
+          path: out/release-tooling/*
+          if-no-files-found: error
+
+  build-portable:
+    name: Build ${{ matrix.platform }} portable bundle
+    runs-on: ${{ matrix.os }}
+    needs: resolve-source
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_tag || format('manual-{0}', github.run_number) }}
+      VCPKG_COMMIT: 3855d4d6b52353ee2e2f73044327e59d01a18c84
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+          - os: windows-2022
+            platform: windows
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+          ref: ${{ needs.resolve-source.outputs.sha }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Download current release tooling
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-tooling
+          path: .release-tooling
+
+      - name: Bootstrap Ubuntu dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chmod +x scripts/bootstrap-ubuntu-22.04.sh
+          ./scripts/bootstrap-ubuntu-22.04.sh --with-gui
+
+      - name: Bootstrap vcpkg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          if ($baseline -ne $env:VCPKG_COMMIT) { throw "VCPKG_COMMIT must match vcpkg.json builtin-baseline" }
+          git clone --no-checkout https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP/vcpkg"
+          git -C "$env:RUNNER_TEMP/vcpkg" checkout --detach "$env:VCPKG_COMMIT"
+          & "$env:RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat"
+          "VCPKG_ROOT=$env:RUNNER_TEMP/vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_FEATURE_FLAGS=manifests,binarycaching" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure GeoCoin Linux release GUI
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cmake --preset linux-release-gui -S . -D BUILD_TESTS=ON
+
+      - name: Build GeoCoin Linux release GUI
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cmake --build out/build/linux-release-gui --parallel
+
+      - name: Configure libgeo Linux release
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cmake --preset linux-release -S libgeo
+
+      - name: Test Linux release commit
+        if: runner.os == 'Linux'
+        shell: bash
+        run: ctest --test-dir out/build/linux-release-gui --output-on-failure --no-tests=error
+
+      - name: Build libgeo Linux release
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cmake --build libgeo/out/build/linux-release --parallel
+
+      - name: Package Linux portable bundle
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          for profile in user admin sdk; do
+            BUNDLE_PROFILE="$profile" \
+              GEO_BUILD_DIR="$PWD/out/build/linux-release-gui" \
+              LIBGEO_BUILD_DIR="$PWD/libgeo/out/build/linux-release" \
+              bash scripts/package_portable_linux.sh
+          done
+          python scripts/check_release_sdk.py out/portable/GeoCoin-linux-x86_64-sdk
+
+      - name: Smoke test packaged Linux GUI
+        if: runner.os == 'Linux'
+        shell: bash
+        run: xvfb-run -a ./out/portable/GeoCoin-linux-x86_64/geocoin-core -platform offscreen --smoke-test -no-auto-connect
+
+      - name: Stage Linux release archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p out/workflow-release
+          cp out/portable/GeoCoin-linux-x86_64{,-admin,-sdk}-portable.tar.gz out/workflow-release/
+          python .release-tooling/generate_sbom.py \
+            out/workflow-release/release-components-linux.cdx.json \
+            --version "$RELEASE_TAG" \
+            --platform linux \
+            --resolved-root out/build/linux-release-gui
+
+      - name: Configure GeoCoin Windows static release GUI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --preset windows-clang-static-release-gui -S . -D BUILD_TESTS=ON
+
+      - name: Build GeoCoin Windows static release GUI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --build out\\build\\windows-clang-static-release-gui --config Release --parallel
+
+      - name: Configure libgeo Windows static release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --preset windows-clang-static-release -S libgeo
+
+      - name: Test Windows release commit
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ctest --test-dir out/build/windows-clang-static-release-gui -C Release --output-on-failure --no-tests=error
+
+      - name: Build libgeo Windows static release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --build libgeo\\out\\build\\windows-clang-static-release --config Release --parallel
+
+      - name: Package Windows portable bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($profile in @("user", "admin", "sdk")) {
+            & ./scripts/package_portable_windows.ps1 -RootPath . -BundleProfile $profile
+            if ($LASTEXITCODE -ne 0) { throw "Packaging $profile failed" }
+          }
+          python scripts/check_release_sdk.py out/portable/GeoCoin-windows-x64-static-sdk
+          if ($LASTEXITCODE -ne 0) { throw "Packaged Windows SDK failed" }
+
+      - name: Smoke test packaged Windows GUI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\out\portable\GeoCoin-windows-x64-static\bin\geocoin-core.exe -platform offscreen --smoke-test -no-auto-connect
+
+      - name: Stage Windows release archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out\workflow-release | Out-Null
+          foreach ($suffix in @("", "-admin", "-sdk")) {
+            Copy-Item "out/portable/GeoCoin-windows-x64-static$suffix.zip" out/workflow-release/ -Force
+          }
+          python .release-tooling/generate_sbom.py `
+            out\workflow-release\release-components-windows.cdx.json `
+            --version "$env:RELEASE_TAG" `
+            --platform windows `
+            --resolved-root out\build\windows-clang-static-release-gui `
+            --require-resolved-vcpkg
+
+      - name: Record tested source commit
+        shell: bash
+        run: git rev-parse HEAD > out/workflow-release/source-${{ matrix.platform }}.txt
+
+      - name: Upload platform release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: portable-${{ matrix.platform }}
+          path: out/workflow-release/*
+          if-no-files-found: error
+
+  assemble-release-assets:
+    name: Assemble release metadata
+    runs-on: ubuntu-22.04
+    needs: [resolve-source, build-portable]
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_tag || format('manual-{0}', github.run_number) }}
+      UPLOAD_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_tag }}
+      SOURCE_SHA: ${{ needs.resolve-source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+          ref: ${{ needs.resolve-source.outputs.sha }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: portable-*
+          path: out/downloads
+
+      - name: Download current release tooling
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-tooling
+          path: .release-tooling
+
+      - name: Assemble portable release assets
+        shell: bash
+        run: |
+          for platform in linux windows; do
+            recorded_sha=$(cat "out/downloads/portable-$platform/source-$platform.txt")
+            test "$recorded_sha" = "$SOURCE_SHA"
+          done
+          mkdir -p out/release-assets
+          find out/downloads -type f \( -name '*.zip' -o -name '*.tar.gz' \) -print0 | while IFS= read -r -d '' file; do
+            cp "$file" out/release-assets/
+          done
+
+          mapfile -t platform_sboms < <(find out/downloads -type f -name 'release-components-*.cdx.json' | sort)
+          if [[ "${#platform_sboms[@]}" -eq 0 ]]; then
+            echo "No platform dependency SBOMs were found." >&2
+            exit 1
+          fi
+          sbom_merge_args=()
+          for platform_sbom in "${platform_sboms[@]}"; do
+            sbom_merge_args+=(--merge-sbom "$platform_sbom")
+          done
+          python .release-tooling/generate_sbom.py \
+            out/release-assets/release-sbom.json \
+            --version "$RELEASE_TAG" \
+            --require-resolved-vcpkg \
+            "${sbom_merge_args[@]}"
+
+          mapfile -t bundles < <(find out/release-assets -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) | sort)
+          if [[ "${#bundles[@]}" -ne 6 ]]; then
+            echo "Expected user, admin and SDK bundles for Linux and Windows." >&2
+            exit 1
+          fi
+
+          python .release-tooling/generate_release_manifest.py \
+            out/release-assets/release-manifest.json \
+            --base-dir "$PWD/out/release-assets" \
+            --source-commit "$SOURCE_SHA" \
+            --release-tag "$RELEASE_TAG" \
+            "${bundles[@]}"
+
+          python .release-tooling/generate_checksums.py \
+            out/release-assets/SHA256SUMS.txt \
+            --base-dir "$PWD/out/release-assets" \
+            "${bundles[@]}" \
+            out/release-assets/release-manifest.json \
+            out/release-assets/release-sbom.json
+
+      - name: Upload combined release assets artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: portable-release-assets
+          path: out/release-assets/*
+          if-no-files-found: error
+
+      - name: Stage and publish the complete GitHub release
+        if: github.event_name == 'push' || github.event.inputs.release_tag != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          test -n "$UPLOAD_TAG"
+          python .release-tooling/resolve_release_source.py --repo "$PWD" --expected-sha "$SOURCE_SHA"
+
+          mapfile -t assets < <(find out/release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No release assets were assembled." >&2
+            exit 1
+          fi
+
+          if gh release view "$UPLOAD_TAG" >/dev/null 2>&1; then
+            is_draft=$(gh release view "$UPLOAD_TAG" --json isDraft --jq '.isDraft')
+            if [[ "$is_draft" != "true" ]]; then
+              echo "Release $UPLOAD_TAG is already published; refusing to mutate it." >&2
+              exit 1
+            fi
+          else
+            gh release create "$UPLOAD_TAG" \
+              --verify-tag \
+              --draft \
+              --title "$UPLOAD_TAG" \
+              --generate-notes
+          fi
+
+          # A retry may encounter files from an interrupted staging attempt.
+          # Replace only names produced by this workflow, while the release is
+          # still a private draft. Unexpected files require manual review.
+          mapfile -t existing < <(gh release view "$UPLOAD_TAG" --json assets --jq '.assets[].name' | sort)
+          for existing_asset in "${existing[@]}"; do
+            if ! printf '%s\n' "${assets[@]}" | grep -Fqx -- "$existing_asset"; then
+              echo "Draft contains an unexpected asset: $existing_asset" >&2
+              exit 1
+            fi
+          done
+          for existing_asset in "${existing[@]}"; do
+            gh release delete-asset "$UPLOAD_TAG" "$existing_asset" --yes
+          done
+
+          payload=()
+          for asset in "${assets[@]}"; do
+            if [[ "$asset" != "release-manifest.json" && "$asset" != "SHA256SUMS.txt" ]]; then
+              payload+=("out/release-assets/$asset")
+            fi
+          done
+          gh release upload "$UPLOAD_TAG" "${payload[@]}"
+          gh release upload "$UPLOAD_TAG" \
+            out/release-assets/release-manifest.json \
+            out/release-assets/SHA256SUMS.txt
+
+          mapfile -t uploaded < <(gh release view "$UPLOAD_TAG" --json assets --jq '.assets[].name' | sort)
+          if ! diff -u \
+              <(printf '%s\n' "${assets[@]}") \
+              <(printf '%s\n' "${uploaded[@]}"); then
+            echo "Draft release asset set does not match the assembled payload." >&2
+            exit 1
+          fi
+
+          # Publication is the final state change. Any earlier failure leaves a
+          # draft that is not visible as a completed release.
+          gh release edit "$UPLOAD_TAG" --draft=false

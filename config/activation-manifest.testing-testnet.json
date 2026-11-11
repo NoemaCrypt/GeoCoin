@@ -1,0 +1,35 @@
+{
+  "manifest_version": 1,
+  "network": "degree-test",
+  "profile": "test",
+  "external_audit": {
+    "required": false,
+    "signed_off": true
+  },
+  "features": {
+    "standard_multisig": {
+      "enabled": true,
+      "activation_height": 0
+    },
+    "sidechain": {
+      "enabled": true,
+      "activation_height": 0
+    },
+    "hierarchical_multisig": {
+      "enabled": true,
+      "activation_height": 0
+    },
+    "delegation": {
+      "enabled": true,
+      "activation_height": 0
+    },
+    "nft": {
+      "enabled": true,
+      "activation_height": 0
+    },
+    "cadastral": {
+      "enabled": true,
+      "activation_height": 0
+    }
+  }
+}

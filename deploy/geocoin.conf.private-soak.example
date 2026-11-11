@@ -1,0 +1,8 @@
+# GeoCoin private soak node example.
+# Pass --network degree-test and any RPC settings explicitly at launch.
+config-version=1
+archive=1
+no-auto-connect=1
+activation-manifest=activation-manifest.json
+
+# Add peers manually with addnode during private soak.

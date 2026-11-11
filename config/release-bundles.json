@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "common_files": {
+    "geographiclib/LICENSE.txt": "licenses/GeographicLib.txt",
+    "third_party/boost-geometry.LICENSE.txt": "licenses/Boost.txt",
+    "liboqs/LICENSE.txt": "licenses/liboqs.txt"
+  },
+  "profiles": {
+    "user": {
+      "required_binaries": ["geocoin-core", "geocoin-node", "geocoin-rpc-miner"],
+      "optional_binaries": ["geocoin-gpu-miner"],
+      "files": {
+        "docs/release-user.txt": "README.txt",
+        "config/activation-manifest.production.json": "config/activation-manifest.production.json"
+      }
+    },
+    "admin": {
+      "required_binaries": ["geocoin-node", "geocoin-db", "geocoin-rpc-miner"],
+      "optional_binaries": [],
+      "files": {
+        "docs/release-admin.txt": "README.txt",
+        "config/activation-manifest.production.json": "config/activation-manifest.production.json",
+        "deploy/geocoin.conf.production.example": "deploy/geocoin.conf.production.example",
+        "deploy/geocoin.conf.seed.example": "deploy/geocoin.conf.seed.example",
+        "deploy/systemd/geocoin-node.service": "deploy/systemd/geocoin-node.service",
+        "deploy/firewall/geocoin-node-ufw.sh": "deploy/firewall/geocoin-node-ufw.sh",
+        "deploy/audit-signoff.template.json": "deploy/audit-signoff.template.json"
+      }
+    },
+    "sdk": {
+      "required_binaries": [],
+      "optional_binaries": [],
+      "files": {
+        "docs/release-sdk.txt": "README.txt",
+        "libgeo/include/libgeo/libgeo.h": "include/libgeo/libgeo.h"
+      }
+    }
+  }
+}

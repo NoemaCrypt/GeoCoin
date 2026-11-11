@@ -1,0 +1,27 @@
+GeoCoin C SDK — libgeo
+
+include/libgeo/libgeo.h — публичный заголовок C API / public C API header.
+Linux: lib/libgeo.so — shared library.
+Windows: lib/geo.lib — библиотека для линковки; также требуется bin/geo.dll и поставляемые с ним runtime-библиотеки.
+Windows: link against lib/geo.lib. Also deploy bin/geo.dll
+and its bundled runtime libraries.
+
+Добавьте include в путь поиска заголовков, lib в путь поиска библиотек.
+Подключайте <libgeo/libgeo.h> и линкуйте приложение с geo.
+Add include to your compiler's header search path, lib to its library search
+path, include <libgeo/libgeo.h> and link your application against geo.
+
+На Linux добавьте абсолютный путь к lib в LD_LIBRARY_PATH или настройте
+RPATH своего приложения. Сохраняйте поставленные runtime-библиотеки рядом.
+On Linux, add the absolute lib directory to LD_LIBRARY_PATH or configure
+your application's RPATH. Keep the supplied runtime libraries together.
+
+Описание функций, владения памятью и обработки ошибок находится в заголовке.
+Начните с geo_api_version и geo_last_error. Библиотека не запускается как
+отдельная программа и не заменяет ноду для синхронизации с сетью.
+The header documents functions, memory ownership and error handling.
+Start with geo_api_version and geo_last_error. This library is not an executable
+and does not replace a node for network synchronization.
+
+Лицензии зависимостей / dependency notices: licenses.
+Контрольные суммы архива / archive checksums: published SHA256SUMS.txt.

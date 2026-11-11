@@ -1,0 +1,37 @@
+name: Linux container builds
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-and-build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:20.04
+          - ubuntu:21.10
+          - ubuntu:22.04
+          - ubuntu:22.10
+          - ubuntu:23.04
+          - ubuntu:23.10
+          - ubuntu:24.04
+          - ubuntu:24.10
+          - ubuntu:25.04
+          - ubuntu:25.10
+          - ubuntu:26.04
+          - debian:12
+          - debian:13
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Bootstrap and build geocoin-node
+        run: bash scripts/container-build-matrix.sh --image "${{ matrix.image }}"

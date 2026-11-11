@@ -1,0 +1,6 @@
+[submodule "liboqs"]
+	path = liboqs
+	url = https://github.com/open-quantum-safe/liboqs.git
+[submodule "geographiclib"]
+	path = geographiclib
+	url = https://github.com/geographiclib/geographiclib.git
