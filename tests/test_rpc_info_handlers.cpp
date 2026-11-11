@@ -1602,7 +1602,11 @@ void test_wallet_account_rpc(
 
 int main()
 {
+#ifdef _WIN32
+    _putenv_s("GEOCOIN_RPC_RATE_LIMIT_MAX_REQUESTS_PER_WINDOW", "1000");
+#else
     setenv("GEOCOIN_RPC_RATE_LIMIT_MAX_REQUESTS_PER_WINDOW", "1000", 1);
+#endif
 
     const std::filesystem::path root = unique_test_dir();
     std::error_code ec;

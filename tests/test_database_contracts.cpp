@@ -6,6 +6,7 @@
 #include "geocoin/storage/witness_payload.hpp"
 #include "geocoin/wallet/wallet.hpp"
 #include "../src/geocoin/state/storage_scan.hpp"
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <thread>
