@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -28,9 +30,11 @@ namespace geocoin::test {
 
 #ifdef _WIN32
 using TestSocket = SOCKET;
+using TestSocketLength = int;
 inline constexpr TestSocket kInvalidTestSocket = INVALID_SOCKET;
 #else
 using TestSocket = int;
+using TestSocketLength = socklen_t;
 inline constexpr TestSocket kInvalidTestSocket = -1;
 #endif
 
@@ -55,6 +59,90 @@ inline void close_test_socket(TestSocket socket) noexcept {
 #else
     ::close(socket);
 #endif
+}
+
+// The node's direct-peer test API takes int descriptors. On Windows use a
+// connected loopback TCP pair instead of the POSIX-only socketpair call.
+inline int test_socket_fd(TestSocket socket) {
+    if (socket == kInvalidTestSocket) return -1;
+#ifdef _WIN32
+    if (socket > static_cast<TestSocket>(std::numeric_limits<int>::max())) {
+        close_test_socket(socket);
+        return -1;
+    }
+#endif
+    return static_cast<int>(socket);
+}
+
+inline int create_test_tcp_socket() {
+    if (!ensure_test_sockets()) return -1;
+    return test_socket_fd(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+}
+
+inline bool make_test_socket_pair(int (&fds)[2]) {
+    fds[0] = fds[1] = -1;
+#ifdef _WIN32
+    if (!ensure_test_sockets()) return false;
+    const TestSocket listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listener == kInvalidTestSocket) return false;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    TestSocketLength length = sizeof(address);
+    if (::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+        ::listen(listener, 1) != 0 ||
+        ::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) != 0) {
+        close_test_socket(listener);
+        return false;
+    }
+    const TestSocket client = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (client == kInvalidTestSocket ||
+        ::connect(client, reinterpret_cast<sockaddr*>(&address), length) != 0) {
+        close_test_socket(client);
+        close_test_socket(listener);
+        return false;
+    }
+    const TestSocket accepted = ::accept(listener, nullptr, nullptr);
+    close_test_socket(listener);
+    fds[0] = test_socket_fd(accepted);
+    fds[1] = test_socket_fd(client);
+    if (fds[0] < 0 || fds[1] < 0) {
+        close_test_socket(static_cast<TestSocket>(fds[0]));
+        close_test_socket(static_cast<TestSocket>(fds[1]));
+        fds[0] = fds[1] = -1;
+        return false;
+    }
+    return true;
+#else
+    return ::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0;
+#endif
+}
+
+inline constexpr int kTestDontWait = 0x10000000;
+
+inline int send_test_fd(int fd, const void* data, size_t size, int flags = 0) {
+    const int length = static_cast<int>(std::min(size, static_cast<size_t>(std::numeric_limits<int>::max())));
+    return static_cast<int>(::send(fd, static_cast<const char*>(data), length, flags));
+}
+
+inline int receive_test_fd(int fd, void* data, size_t size, int flags = 0) {
+    if (flags & kTestDontWait) {
+        flags &= ~kTestDontWait;
+#ifdef _WIN32
+        WSAPOLLFD pending{};
+        pending.fd = static_cast<SOCKET>(fd);
+        pending.events = POLLIN;
+        const int ready = ::WSAPoll(&pending, 1, 0);
+        if (ready <= 0) {
+            if (ready == 0) ::WSASetLastError(WSAEWOULDBLOCK);
+            return -1;
+        }
+#else
+        flags |= MSG_DONTWAIT;
+#endif
+    }
+    const int length = static_cast<int>(std::min(size, static_cast<size_t>(std::numeric_limits<int>::max())));
+    return static_cast<int>(::recv(fd, static_cast<char*>(data), length, flags));
 }
 
 inline int test_socket_error() {
@@ -173,7 +261,7 @@ public:
                 return false;
             }
             int so_error = 0;
-            socklen_t length = sizeof(so_error);
+            TestSocketLength length = sizeof(so_error);
             if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&so_error), &length) != 0 ||
                 so_error != 0) {
                 close_test_socket(fd);
@@ -302,7 +390,7 @@ public:
             throw std::runtime_error("failed to bind listen socket");
         }
         sockaddr_in bound{};
-        socklen_t length = sizeof(bound);
+        TestSocketLength length = sizeof(bound);
         if (::getsockname(fd_, reinterpret_cast<sockaddr*>(&bound), &length) != 0) {
             close();
             throw std::runtime_error("failed to read listen port");

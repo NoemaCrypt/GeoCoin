@@ -1,3 +1,4 @@
+#include "tcp_test_client.hpp"
 #include "geocoin/node/node.hpp"
 #include "geocoin/core/merkle.hpp"
 #include "geocoin/consensus/consensus.hpp"
@@ -229,28 +230,22 @@ class SocketPair {
 public:
     SocketPair()
     {
-#ifndef _WIN32
         int fds[2] = {-1, -1};
-        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+        if (!geocoin::test::make_test_socket_pair(fds)) {
             throw std::runtime_error("socketpair failed");
         }
         peer_fd_ = fds[0];
         read_fd_ = fds[1];
-#else
-        throw std::runtime_error("socketpair test is not supported on Windows");
-#endif
     }
 
     ~SocketPair()
     {
-#ifndef _WIN32
         if (peer_fd_ >= 0) {
-            ::close(peer_fd_);
+            geocoin::test::close_test_socket(peer_fd_);
         }
         if (read_fd_ >= 0) {
-            ::close(read_fd_);
+            geocoin::test::close_test_socket(read_fd_);
         }
-#endif
     }
 
     int take_peer_fd()

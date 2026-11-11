@@ -1,3 +1,4 @@
+#include "tcp_test_client.hpp"
 #include "geocoin/consensus/chainparams.hpp"
 #include "geocoin/consensus/consensus.hpp"
 #include "geocoin/consensus/optimized_miner.hpp"
@@ -409,25 +410,19 @@ class SocketPair {
 public:
     SocketPair()
     {
-#ifndef _WIN32
         int fds[2] = {-1, -1};
-        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+        if (!geocoin::test::make_test_socket_pair(fds)) {
             throw std::runtime_error("socketpair failed");
         }
         peer_fd_ = fds[0];
         read_fd_ = fds[1];
-#else
-        throw std::runtime_error("socketpair test is not supported on Windows");
-#endif
     }
 
     ~SocketPair()
     {
-#ifndef _WIN32
         if (read_fd_ >= 0) {
-            ::close(read_fd_);
+            geocoin::test::close_test_socket(read_fd_);
         }
-#endif
     }
 
     int take_peer_fd()
@@ -451,7 +446,6 @@ public:
 
     geocoin::bytes read_message(std::chrono::milliseconds timeout = std::chrono::milliseconds(1000))
     {
-#ifndef _WIN32
         if (read_fd_ < 0 || !remote_channel_) {
             return {};
         }
@@ -493,14 +487,13 @@ public:
             }
 
             geocoin::bytes chunk(8192);
-            const ssize_t received = ::recv(read_fd_, chunk.data(), chunk.size(), 0);
+            const ssize_t received = geocoin::test::receive_test_fd(read_fd_, chunk.data(), chunk.size(), 0);
             if (received <= 0) {
                 return {};
             }
             chunk.resize(static_cast<size_t>(received));
             wire_buffer_.insert(wire_buffer_.end(), chunk.begin(), chunk.end());
         }
-#endif
         return {};
     }
 
@@ -1837,8 +1830,8 @@ void test_headers_below_reorg_floor_are_not_indexed()
     expect(!sync.handle_headers(peer, {deep.header}), "fork below the reorg limit is rejected");
     expect(!Access::has_header(sync, deep.get_hash()), "fork below the reorg limit is not indexed");
 
-    const auto& near = active[active.size() - 5];
-    const auto shallow = mine_easy_child_block(near.first, near.second, 0x52);
+    const auto& near_tip = active[active.size() - 5];
+    const auto shallow = mine_easy_child_block(near_tip.first, near_tip.second, 0x52);
     expect(sync.handle_headers(peer, {shallow.header}), "fork within the reorg limit is accepted");
     expect(Access::has_header(sync, shallow.get_hash()), "fork within the reorg limit is indexed");
 }

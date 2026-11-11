@@ -1,3 +1,4 @@
+#include "tcp_test_client.hpp"
 #include "geocoin/network/peer_manager.hpp"
 #include "geocoin/network/peer_manager_internal.hpp"
 #include "geocoin/crypto/geo_area.hpp"
@@ -405,24 +406,20 @@ struct LocalSocketPair {
     int second = -1;
 
     LocalSocketPair() {
-#ifndef _WIN32
         int fds[2] = {-1, -1};
-        if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0) {
+        if (geocoin::test::make_test_socket_pair(fds)) {
             first = fds[0];
             second = fds[1];
         }
-#endif
     }
 
     ~LocalSocketPair() {
-#ifndef _WIN32
         if (first >= 0) {
-            close(first);
+            geocoin::test::close_test_socket(first);
         }
         if (second >= 0) {
-            close(second);
+            geocoin::test::close_test_socket(second);
         }
-#endif
     }
 
     int release_first() {
@@ -432,36 +429,25 @@ struct LocalSocketPair {
     }
 
     bool send_second(const geocoin::bytes& data) const {
-#ifndef _WIN32
         if (second < 0) {
             return false;
         }
-        return ::send(second, data.data(), data.size(), 0) == static_cast<ssize_t>(data.size());
-#else
-        (void)data;
-        return false;
-#endif
+        return geocoin::test::send_test_fd(second, data.data(), data.size(), 0) == static_cast<ssize_t>(data.size());
     }
 
     bool recv_second(geocoin::bytes& out, size_t max_size = 4096) const {
-#ifndef _WIN32
         if (second < 0 || max_size == 0) {
             out.clear();
             return false;
         }
         out.resize(max_size);
-        const ssize_t received = ::recv(second, out.data(), out.size(), MSG_DONTWAIT);
+        const ssize_t received = geocoin::test::receive_test_fd(second, out.data(), out.size(), geocoin::test::kTestDontWait);
         if (received <= 0) {
             out.clear();
             return false;
         }
         out.resize(static_cast<size_t>(received));
         return true;
-#else
-        (void)out;
-        (void)max_size;
-        return false;
-#endif
     }
 
     explicit operator bool() const {
@@ -474,14 +460,13 @@ struct LocalTcpListener {
     uint16_t port = 0;
 
     LocalTcpListener() {
-#ifndef _WIN32
-        fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        fd = geocoin::test::create_test_tcp_socket();
         if (fd < 0) {
             return;
         }
 
         const int one = 1;
-        (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
@@ -495,13 +480,12 @@ struct LocalTcpListener {
         }
 
         sockaddr_in bound{};
-        socklen_t len = sizeof(bound);
+        geocoin::test::TestSocketLength len = sizeof(bound);
         if (::getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &len) != 0) {
             close_fd();
             return;
         }
         port = ntohs(bound.sin_port);
-#endif
     }
 
     ~LocalTcpListener() {
@@ -509,12 +493,10 @@ struct LocalTcpListener {
     }
 
     void close_fd() {
-#ifndef _WIN32
         if (fd >= 0) {
-            close(fd);
+            geocoin::test::close_test_socket(fd);
             fd = -1;
         }
-#endif
     }
 
     std::string address() const {
@@ -522,13 +504,13 @@ struct LocalTcpListener {
     }
 
     int accept_one(std::string& remote_address) const {
-#ifndef _WIN32
         if (fd < 0) {
             return -1;
         }
         sockaddr_in remote{};
-        socklen_t len = sizeof(remote);
-        const int accepted = ::accept(fd, reinterpret_cast<sockaddr*>(&remote), &len);
+        geocoin::test::TestSocketLength len = sizeof(remote);
+        const int accepted = geocoin::test::test_socket_fd(
+            ::accept(fd, reinterpret_cast<sockaddr*>(&remote), &len));
         if (accepted < 0) {
             return -1;
         }
@@ -538,10 +520,6 @@ struct LocalTcpListener {
         remote_address = std::string(converted ? converted : "127.0.0.1") +
             ":" + std::to_string(ntohs(remote.sin_port));
         return accepted;
-#else
-        (void)remote_address;
-        return -1;
-#endif
     }
 
     explicit operator bool() const {
@@ -550,41 +528,36 @@ struct LocalTcpListener {
 };
 
 uint16_t reserve_free_loopback_port() {
-#ifndef _WIN32
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    const int fd = geocoin::test::create_test_tcp_socket();
     if (fd < 0) {
         return 0;
     }
 
     const int one = 1;
-    (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = 0;
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        close(fd);
+        geocoin::test::close_test_socket(fd);
         return 0;
     }
 
     sockaddr_in bound{};
-    socklen_t len = sizeof(bound);
+    geocoin::test::TestSocketLength len = sizeof(bound);
     if (::getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &len) != 0) {
-        close(fd);
+        geocoin::test::close_test_socket(fd);
         return 0;
     }
     const uint16_t port = ntohs(bound.sin_port);
-    close(fd);
+    geocoin::test::close_test_socket(fd);
     return port;
-#else
-    return 0;
-#endif
 }
 
 int connect_loopback_tcp(uint16_t port) {
-#ifndef _WIN32
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    const int fd = geocoin::test::create_test_tcp_socket();
     if (fd < 0) {
         return -1;
     }
@@ -594,25 +567,17 @@ int connect_loopback_tcp(uint16_t port) {
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(port);
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        close(fd);
+        geocoin::test::close_test_socket(fd);
         return -1;
     }
     return fd;
-#else
-    (void)port;
-    return -1;
-#endif
 }
 
 void close_fd_if_open(int& fd) {
-#ifndef _WIN32
     if (fd >= 0) {
-        close(fd);
+        geocoin::test::close_test_socket(fd);
         fd = -1;
     }
-#else
-    (void)fd;
-#endif
 }
 
 void pump_managers(

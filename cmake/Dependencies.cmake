@@ -248,9 +248,14 @@ endif()
 
 set(OQS_BUILD_ONLY_LIB ON CACHE BOOL "" FORCE)
 set(OQS_MINIMAL_BUILD "KEM_ml_kem_768;SIG_falcon_512" CACHE STRING "" FORCE)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
-    # liboqs leaves this cached OFF after a minimal build. Force the AVX2/BMI2/POPCNT
-    # ML-KEM-768 backend; its dispatcher still falls back when the CPU lacks them.
+if(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin" AND
+   CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    # liboqs leaves this cached OFF after a minimal build. Enable its supported
+    # AVX2/BMI2/POPCNT backend, retaining runtime dispatch for older CPUs.
     set(OQS_ENABLE_KEM_ml_kem_768_x86_64 ON CACHE BOOL "" FORCE)
+elseif(WIN32)
+    # liboqs 0.15.0's x86_64 ML-KEM assembly uses the System V ABI. Windows
+    # must use the portable implementation, as required by alg_support.cmake.
+    set(OQS_ENABLE_KEM_ml_kem_768_x86_64 OFF CACHE BOOL "" FORCE)
 endif()
 add_subdirectory(liboqs EXCLUDE_FROM_ALL)

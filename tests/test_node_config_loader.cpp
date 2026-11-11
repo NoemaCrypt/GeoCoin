@@ -199,6 +199,7 @@ void test_default_config_and_node_type_names() {
     std::ifstream existing_in(existing_path, std::ios::binary);
     std::string existing_body;
     std::getline(existing_in, existing_body);
+    existing_in.close();
     check(existing_body == "keep-this=1", "existing default config file is not overwritten");
     std::filesystem::remove(existing_path);
 
@@ -211,6 +212,7 @@ void test_default_config_and_node_type_names() {
         (std::istreambuf_iterator<char>(generated_in)),
         std::istreambuf_iterator<char>()
     );
+    generated_in.close();
     check(generated_body.find("GeoCoin configuration") != std::string::npos,
           "missing default config file is generated");
     check(generated_body.find("rpc-rate-limit=0") != std::string::npos,

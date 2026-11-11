@@ -48,6 +48,11 @@ option(BUILD_GENESIS_CLI "Build developer-only GeoCoin genesis miner CLI" OFF)
 option(BUILD_MULTISIG_CLI "Build GeoCoin multisig CLI" OFF)
 option(BUILD_QT_GUI "Build Qt GUI" ON)
 option(GEOCOIN_WINDOWS_STATIC_RELEASE "Build Windows release binaries with static third-party/runtime linkage" OFF)
+if(WIN32 AND GEOCOIN_WINDOWS_STATIC_RELEASE)
+    # Visual Studio otherwise runs configure-time link probes in Debug, which
+    # cannot link the release-only vcpkg libraries with their static CRT.
+    set(CMAKE_TRY_COMPILE_CONFIGURATION Release)
+endif()
 option(GEOCOIN_HARDEN_BUILD "Enable supported compiler/linker exploit mitigations" ON)
 set(GEOCOIN_SANITIZER "none" CACHE STRING "Runtime sanitizer: none, address-undefined, or thread")
 set_property(CACHE GEOCOIN_SANITIZER PROPERTY STRINGS none address-undefined thread)

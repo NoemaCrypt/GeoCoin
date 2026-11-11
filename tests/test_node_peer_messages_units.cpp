@@ -1,3 +1,4 @@
+#include "tcp_test_client.hpp"
 #include "geocoin/core/blockchain.hpp"
 #include "geocoin/network/addrman.hpp"
 #include "geocoin/network/messages.hpp"
@@ -252,28 +253,22 @@ class SocketPair {
 public:
     SocketPair()
     {
-#ifndef _WIN32
         int fds[2] = {-1, -1};
-        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+        if (!geocoin::test::make_test_socket_pair(fds)) {
             throw std::runtime_error("socketpair failed");
         }
         node_fd_ = fds[0];
         remote_fd_ = fds[1];
-#else
-        throw std::runtime_error("socketpair test is not supported on Windows");
-#endif
     }
 
     ~SocketPair()
     {
-#ifndef _WIN32
         if (node_fd_ >= 0) {
-            ::close(node_fd_);
+            geocoin::test::close_test_socket(node_fd_);
         }
         if (remote_fd_ >= 0) {
-            ::close(remote_fd_);
+            geocoin::test::close_test_socket(remote_fd_);
         }
-#endif
     }
 
     int take_node_fd()
@@ -299,10 +294,9 @@ public:
         if (!remote_channel_->protect(framed, record)) {
             throw std::runtime_error("socketpair message encryption failed");
         }
-#ifndef _WIN32
         size_t sent_total = 0;
         while (sent_total < record.size()) {
-            const ssize_t sent = ::send(
+            const ssize_t sent = geocoin::test::send_test_fd(
                 remote_fd_,
                 record.data() + sent_total,
                 record.size() - sent_total,
@@ -313,7 +307,6 @@ public:
             }
             sent_total += static_cast<size_t>(sent);
         }
-#endif
     }
 
     std::vector<geocoin::network::MessageType> read_message_types(
@@ -324,7 +317,6 @@ public:
             return types;
         }
 
-#ifndef _WIN32
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
         while (std::chrono::steady_clock::now() < deadline && types.size() < expected) {
             while (types.size() < expected) {
@@ -363,7 +355,7 @@ public:
             }
 
             geocoin::bytes chunk(8192);
-            const ssize_t received = ::recv(remote_fd_, chunk.data(), chunk.size(), MSG_DONTWAIT);
+            const ssize_t received = geocoin::test::receive_test_fd(remote_fd_, chunk.data(), chunk.size(), geocoin::test::kTestDontWait);
             if (received > 0) {
                 chunk.resize(static_cast<size_t>(received));
                 wire_buffer_.insert(wire_buffer_.end(), chunk.begin(), chunk.end());
@@ -373,20 +365,15 @@ public:
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         }
-#endif
 
         return types;
     }
 
     bool is_remote_open() const
     {
-#ifndef _WIN32
         char byte = 0;
-        const ssize_t received = ::recv(remote_fd_, &byte, 1, MSG_DONTWAIT | MSG_PEEK);
-        return received > 0 || (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
-#else
-        return false;
-#endif
+        const ssize_t received = geocoin::test::receive_test_fd(remote_fd_, &byte, 1, geocoin::test::kTestDontWait | MSG_PEEK);
+        return received > 0 || (received < 0 && geocoin::test::test_socket_would_block(geocoin::test::test_socket_error()));
     }
 
     void drain()
