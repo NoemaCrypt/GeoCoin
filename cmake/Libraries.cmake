@@ -410,7 +410,7 @@ target_link_libraries(
         geocoin_network_txpool
         geocoin_network_sync
 )
-target_link_libraries(geocoin_node geocoin_node_api geocoin_blockchain geocoin_state geocoin_storage geocoin_network geocoin_consensus geocoin_chain)
+target_link_libraries(geocoin_node PUBLIC geocoin_node_api geocoin_blockchain geocoin_state geocoin_storage geocoin_network geocoin_consensus geocoin_chain)
 target_link_libraries(geocoin_wallet PUBLIC geocoin_core geocoin_crypto geocoin_multisig geocoin_state)
 if(WIN32)
     target_link_libraries(geocoin_node PUBLIC advapi32)

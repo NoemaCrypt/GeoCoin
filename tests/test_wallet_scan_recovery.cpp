@@ -2,6 +2,7 @@
 #include "geocoin/wallet/wallet.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <iostream>
 #include <condition_variable>
 #include <mutex>

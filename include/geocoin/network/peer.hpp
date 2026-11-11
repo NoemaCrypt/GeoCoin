@@ -11,7 +11,7 @@
 #include <mutex>
 
 #ifdef _WIN32
-#include <BaseTsd.h>
+#include <basetsd.h>
 using ssize_t = SSIZE_T;
 #endif
 
