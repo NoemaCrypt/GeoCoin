@@ -153,6 +153,13 @@ while IFS= read -r plugin_file; do
   copy_deps_recursive "$plugin_file"
 done < <(find "$OUT_DIR/plugins" -type f \( -name '*.so' -o -name '*.so.*' \))
 
+notice_args=()
+for dependency in "${!COPIED_DEPS[@]}"; do
+  notice_args+=(--library "$dependency")
+done
+"$PYTHON_BIN" "$ROOT_DIR/scripts/release_bundle.py" notices --root "$ROOT_DIR" \
+  --profile "$BUNDLE_PROFILE" --platform linux --output "$OUT_DIR" "${notice_args[@]}"
+
 set_elf_rpath() {
   local target="$1"
   local rpath="$2"

@@ -3,7 +3,8 @@
   "common_files": {
     "geographiclib/LICENSE.txt": "licenses/GeographicLib.txt",
     "third_party/boost-geometry.LICENSE.txt": "licenses/Boost.txt",
-    "liboqs/LICENSE.txt": "licenses/liboqs.txt"
+    "liboqs/LICENSE.txt": "licenses/liboqs.txt",
+    "third_party/rocksdb.LICENSE.txt": "licenses/RocksDB.txt"
   },
   "profiles": {
     "user": {

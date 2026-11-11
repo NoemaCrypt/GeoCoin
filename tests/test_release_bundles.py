@@ -73,6 +73,23 @@ class ReleaseBundles(unittest.TestCase):
                         self.assertFalse(any(name.startswith(("include/", "deploy/")) for name in names))
                         self.assertNotIn("bin/geocoin-db" + (".exe" if platform == "windows" else ""), names)
 
+    def test_windows_dependency_notices_are_packaged(self):
+        installed = self.base / "installed"
+        notice = installed / "share/openssl/copyright"
+        notice.parent.mkdir(parents=True)
+        notice.write_text("Upstream license notice")
+        (notice.parent / "build.log").write_text("must not ship")
+        output = self.staged("admin", "windows")
+        self.assertEqual(bundle.notices(output, "windows", [], installed), 1)
+        self.assertEqual((output / "licenses/dependencies/openssl.txt").read_text(),
+                         "Upstream license notice")
+        self.assertFalse((output / "licenses/dependencies/build.log").exists())
+        bundle.check(output, "admin", "windows")
+        extra = output / "licenses/dependencies/private.key"
+        extra.write_text("must not ship")
+        with self.assertRaisesRegex(ValueError, "Unexpected file"):
+            bundle.check(output, "admin", "windows")
+
     def test_missing_required_binary_fails_before_staging(self):
         (self.build / "geocoin-node").unlink()
         output = self.base / "missing"

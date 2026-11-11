@@ -42,14 +42,13 @@ function Get-ImportsWithDumpbin([string]$ExePath) {
 }
 
 function Get-ImportsWithLlvmObjdump([string]$ExePath) {
-    $objdump = (Get-Command llvm-objdump.exe -ErrorAction SilentlyContinue).Source
-    if (!$objdump) {
-        $objdump = (Get-Command llvm-readobj.exe -ErrorAction SilentlyContinue).Source
-    }
+    $inspector = Get-Command -Name llvm-objdump.exe, llvm-objdump, llvm-readobj.exe, llvm-readobj `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    $objdump = if ($inspector) { $inspector.Source } else { $null }
     if (!$objdump) {
         return $null
     }
-    $text = if ((Split-Path $objdump -Leaf) -eq "llvm-readobj.exe") {
+    $text = if ((Split-Path $objdump -Leaf) -match "^llvm-readobj(\.exe)?$") {
         & $objdump --coff-imports $ExePath 2>$null
     } else {
         & $objdump -p $ExePath 2>$null

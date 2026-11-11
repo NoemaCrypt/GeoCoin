@@ -1,5 +1,8 @@
 GeoCoin — кошелёк, нода и майнинг / Wallet, node and mining
 
+Требования: Linux x86_64 с glibc 2.35+; Windows 10/11 x64.
+Requirements: Linux x86_64 with glibc 2.35+; Windows 10/11 x64.
+
 ЗАПУСК / START
 Linux: распакуйте весь архив и запустите ./geocoin-core.
 Windows: распакуйте весь архив и запустите bin\geocoin-core.exe.
@@ -27,12 +30,12 @@ CPU-майнинг доступен в кошельке. geocoin-rpc-miner — �
 для подключения к RPC ноды; параметры подключения смотрите в его --help.
 Для него нужны учётные данные роли miner.
 GPU-майнинг доступен, если в архиве есть geocoin-gpu-miner.
-Требуется установленный драйвер видеокарты. NVIDIA использует CUDA,
-AMD — HIP или OpenCL, другие поддерживаемые устройства — OpenCL.
+Эта сборка использует OpenCL. Установите драйвер NVIDIA, AMD или Intel
+с поддержкой OpenCL для вашей видеокарты.
 CPU mining is available in the wallet. geocoin-rpc-miner supports CPU mining
 against a node's RPC using miner credentials; see --help for connection options.
-GPU mining is available when geocoin-gpu-miner is included. Install your GPU
-vendor's driver: CUDA for NVIDIA, HIP/OpenCL for AMD, OpenCL where supported.
+This release uses OpenCL for GPU mining. Install the NVIDIA, AMD or Intel
+driver with OpenCL support for your graphics card.
 
 ОБНОВЛЕНИЕ / UPDATE
 Завершите работу приложения, замените файлы программы и запустите снова.

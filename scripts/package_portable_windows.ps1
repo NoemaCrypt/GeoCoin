@@ -327,6 +327,24 @@ Ensure-Directory $libDir
     --profile $BundleProfile --platform windows --build-dir $GeoBuildDir --output $OutputDir
 if ($LASTEXITCODE -ne 0) { throw "Release payload staging failed" }
 
+$noticeBuildDir = if ($BundleProfile -eq "sdk") { $LibGeoBuildDir } else { $GeoBuildDir }
+$noticeCacheDir = Find-CMakeCacheDirectory $noticeBuildDir
+if (![string]::IsNullOrWhiteSpace($noticeCacheDir)) {
+    $noticeCache = Join-Path $noticeCacheDir "CMakeCache.txt"
+    $noticeInstalled = Get-CMakeCacheValue $noticeCache "VCPKG_INSTALLED_DIR"
+    if ([string]::IsNullOrWhiteSpace($noticeInstalled)) {
+        $noticeInstalled = Get-CMakeCacheValue $noticeCache "_VCPKG_INSTALLED_DIR"
+    }
+    $noticeTriplet = Get-CMakeCacheValue $noticeCache "VCPKG_TARGET_TRIPLET"
+    if (![string]::IsNullOrWhiteSpace($noticeInstalled) -and
+        ![string]::IsNullOrWhiteSpace($noticeTriplet)) {
+        & $python (Join-Path $root "scripts/release_bundle.py") notices --root $root `
+            --profile $BundleProfile --platform windows --output $OutputDir `
+            --dependencies-root (Join-Path $noticeInstalled $noticeTriplet)
+        if ($LASTEXITCODE -ne 0) { throw "Dependency notice collection failed" }
+    }
+}
+
 if ($staticRelease -and $BundleProfile -eq "user" -and (Test-Path (Join-Path $binDir "geocoin-gpu-miner.exe"))) {
     $openClCandidates = @(
         (Join-Path $GeoBuildDir "OpenCL.dll"),

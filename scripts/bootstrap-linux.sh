@@ -115,6 +115,7 @@ common_packages=(
   clang
   cmake
   curl
+  file
   g++
   git
   gnupg
@@ -133,6 +134,7 @@ common_packages=(
 
 gui_packages=(
   libqrencode-dev
+  ocl-icd-opencl-dev
   qtbase5-dev
   qtbase5-dev-tools
   qttools5-dev

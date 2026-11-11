@@ -10,7 +10,7 @@
   "features" : {
     "gui" : {
       "description" : "Qt wallet and QR codes",
-      "dependencies" : [ "libqrencode", "qt5-base" ]
+      "dependencies" : [ "libqrencode", "qt5-base", "opencl" ]
     }
   }
 }

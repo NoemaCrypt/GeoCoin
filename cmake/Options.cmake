@@ -24,7 +24,9 @@ if(WIN32)
     add_compile_definitions(
         WIN32_LEAN_AND_MEAN
         NOMINMAX
-        _WIN32_WINNT=0x0601
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00
+        BOOST_USE_WINAPI_VERSION=0x0A00
         _CRT_SECURE_NO_WARNINGS
         _CRT_NONSTDC_NO_WARNINGS
     )

@@ -106,7 +106,10 @@ jobs:
       - name: Configure GeoCoin Linux release GUI
         if: runner.os == 'Linux'
         shell: bash
-        run: cmake --preset linux-release-gui -S . -D BUILD_TESTS=ON
+        run: >-
+          cmake --preset linux-release-gui -S . -D BUILD_TESTS=ON
+          -D BUILD_GPU_MINER=ON -D GEOCOIN_ENABLE_CUDA=OFF
+          -D GEOCOIN_ENABLE_HIP=OFF -D GEOCOIN_ENABLE_OPENCL=ON
 
       - name: Build GeoCoin Linux release GUI
         if: runner.os == 'Linux'
@@ -160,7 +163,10 @@ jobs:
       - name: Configure GeoCoin Windows static release GUI
         if: runner.os == 'Windows'
         shell: pwsh
-        run: cmake --preset windows-clang-static-release-gui -S . -D BUILD_TESTS=ON
+        run: >-
+          cmake --preset windows-clang-static-release-gui -S . -D BUILD_TESTS=ON
+          -D BUILD_GPU_MINER=ON -D GEOCOIN_ENABLE_CUDA=OFF
+          -D GEOCOIN_ENABLE_HIP=OFF -D GEOCOIN_ENABLE_OPENCL=ON
 
       - name: Build GeoCoin Windows static release GUI
         if: runner.os == 'Windows'

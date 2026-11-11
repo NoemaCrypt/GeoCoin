@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import subprocess
 import tarfile
 import zipfile
 
@@ -50,6 +51,34 @@ def stage(root, output, build, profile, platform):
         target = output / destination
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+
+
+def notices(output, platform, libraries, dependencies_root=None):
+    target = output / "licenses/dependencies"
+    sources = {}
+    if platform == "linux":
+        for library in libraries:
+            paths = [str(library), str(library.resolve())]
+            result = subprocess.run(["dpkg-query", "--search", *paths], capture_output=True, text=True)
+            for line in result.stdout.splitlines():
+                owner = line.split(": ", 1)[0].split(":", 1)[0]
+                if re.fullmatch(r"[a-z0-9][a-z0-9+.\-]*", owner):
+                    source = Path("/usr/share/doc") / owner / "copyright"
+                    if source.is_file():
+                        sources[owner + ".txt"] = source
+        for source in Path("/usr/share/common-licenses").glob("*"):
+            if source.is_file():
+                sources["license-" + source.name + ".txt"] = source
+    elif dependencies_root is not None:
+        for source in (dependencies_root / "share").glob("*/copyright"):
+            if source.is_file():
+                sources[source.parent.name + ".txt"] = source
+    for name, source in sources.items():
+        if not re.fullmatch(r"[A-Za-z0-9_.+\-]+\.txt", name):
+            raise ValueError(f"Invalid dependency notice name: {name}")
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target / name)
+    return len(sources)
 
 
 def entries(source):
@@ -127,7 +156,8 @@ def check(source, profile, platform, root=ROOT):
         plugins = profile == "user" and bool(re.fullmatch(
             r"plugins/(platforms|imageformats|iconengines|styles)/[^/]+\.so" if platform == "linux"
             else r"bin/(platforms|imageformats|iconengines|styles)/[^/]+\.dll", name, re.I))
-        if name not in allowed and not runtime and not plugins:
+        notice = bool(re.fullmatch(r"licenses/dependencies/[A-Za-z0-9_.+\-]+\.txt", name))
+        if name not in allowed and not runtime and not plugins and not notice:
             raise ValueError(f"Unexpected file in {profile} bundle: {name}")
         if platform == "linux" and (name in spec["required_binaries"] or name.startswith("bin/geocoin-")) and not mode & 0o111:
             raise ValueError(f"Release binary or launcher is not executable: {name}")
@@ -138,11 +168,13 @@ def check(source, profile, platform, root=ROOT):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("stage", "check"))
+    parser.add_argument("command", choices=("stage", "check", "notices"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--profile", choices=("user", "admin", "sdk"), required=True)
     parser.add_argument("--platform", choices=("linux", "windows"), required=True)
     parser.add_argument("--build-dir", type=Path)
+    parser.add_argument("--library", type=Path, action="append", default=[])
+    parser.add_argument("--dependencies-root", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -150,6 +182,9 @@ def main():
             if args.build_dir is None:
                 parser.error("stage requires --build-dir")
             stage(args.root, args.output, args.build_dir, args.profile, args.platform)
+        elif args.command == "notices":
+            count = notices(args.output, args.platform, args.library, args.dependencies_root)
+            print(f"Included {count} dependency notices")
         else:
             count = check(args.output, args.profile, args.platform, args.root)
             print(f"Validated {args.platform}/{args.profile} bundle: {count} files")
