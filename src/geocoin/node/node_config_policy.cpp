@@ -1,4 +1,5 @@
 #include "geocoin/node/node_config_loader.hpp"
+#include "geocoin/network/dns_seeds.h"
 
 #include <filesystem>
 #include <fstream>
@@ -25,7 +26,10 @@ const char* node_type_name(NodeType type) {
     return "unknown";
 }
 
-void write_default_node_config_if_missing(const std::string& config_file) {
+void write_default_node_config_if_missing(
+    const std::string& config_file,
+    const std::string& network_id
+) {
     if (std::filesystem::exists(config_file)) {
         return;
     }
@@ -46,9 +50,10 @@ void write_default_node_config_if_missing(const std::string& config_file) {
     cfg << "# db-max-background-jobs=0\n";
     cfg << "# Benchmark only: may lose recent IBD writes after crash.\n";
     cfg << "# db-unsafe-disable-wal-during-ibd=0\n";
-    cfg << "# Add persistent peers:\n";
-    cfg << "# addnode=1.2.3.4:3030\n";
-    cfg << "# addnode=5.6.7.8:3030\n";
+    cfg << "# Add persistent peers with addnode=host:port.\n";
+    if (network_id == "degree") {
+        cfg << "addnode=" << network::DEFAULT_MAINNET_SEED_NODE << "\n";
+    }
     cfg << "# Optional: disable auto-connect logic\n";
     cfg << "# no-auto-connect=1\n";
     cfg << "# Optional: archive mode (store witness, disable pruning)\n";

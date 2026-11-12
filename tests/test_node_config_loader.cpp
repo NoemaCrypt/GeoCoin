@@ -1,8 +1,10 @@
 #include "geocoin/node/node_config_loader.hpp"
 #include "geocoin/node/node_key.hpp"
 #include "geocoin/node/node.hpp"
+#include "geocoin/network/dns_seeds.h"
 #include "geocoin/utils/secret_file.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -195,7 +197,7 @@ void test_invalid_config_values_are_rejected() {
 
 void test_default_config_and_node_type_names() {
     const auto existing_path = write_temp_config("keep-this=1\n");
-    node::write_default_node_config_if_missing(existing_path.string());
+    node::write_default_node_config_if_missing(existing_path.string(), "degree");
     std::ifstream existing_in(existing_path, std::ios::binary);
     std::string existing_body;
     std::getline(existing_in, existing_body);
@@ -206,7 +208,7 @@ void test_default_config_and_node_type_names() {
     const auto missing_path = std::filesystem::temp_directory_path() /
         ("geocoin-node-config-default-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".conf");
     std::filesystem::remove(missing_path);
-    node::write_default_node_config_if_missing(missing_path.string());
+    node::write_default_node_config_if_missing(missing_path.string(), "degree");
     std::ifstream generated_in(missing_path, std::ios::binary);
     std::string generated_body(
         (std::istreambuf_iterator<char>(generated_in)),
@@ -221,7 +223,34 @@ void test_default_config_and_node_type_names() {
           "default config disables RPC connection cap");
     check(generated_body.find("rpc-max-connections-per-ip=0") != std::string::npos,
           "default config disables per-IP RPC connection cap");
+    node::NodeConfig generated_config;
+    node::apply_runtime_config_from_file(generated_config, missing_path.string());
+    check(generated_config.seed_nodes == std::vector<std::string>{"45.12.114.4:3030"},
+          "fresh mainnet config loads a persistent peer without DNS");
+    node::NodeConfig disabled_config;
+    disabled_config.enable_auto_connect = false;
+    node::apply_runtime_config_from_file(disabled_config, missing_path.string());
+    check(!disabled_config.enable_auto_connect,
+          "default peer does not override disabled auto-connect");
     std::filesystem::remove(missing_path);
+
+    for (const auto* network_id : {"degree-test", "degree-load"}) {
+        node::write_default_node_config_if_missing(missing_path.string(), network_id);
+        node::NodeConfig isolated_config;
+        isolated_config.network = network_id;
+        node::apply_runtime_config_from_file(isolated_config, missing_path.string());
+        check(isolated_config.seed_nodes.empty(),
+              std::string(network_id) + " default config does not include mainnet peers");
+        std::filesystem::remove(missing_path);
+    }
+
+    const auto mainnet_seeds = network::get_hardcoded_seed_nodes(false);
+    check(!mainnet_seeds.empty() && mainnet_seeds.front() == "45.12.114.4:3030",
+          "existing mainnet configs also bootstrap from a literal IP without DNS");
+    const auto testnet_seeds = network::get_hardcoded_seed_nodes(true);
+    check(std::none_of(testnet_seeds.begin(), testnet_seeds.end(), [](const auto& endpoint) {
+              return endpoint == "45.12.114.4:3030";
+          }), "testnet fallback seeds do not include the mainnet peer");
 
     const node::NodeConfig defaults;
     check(defaults.rpc_rate_limit_max_requests_per_window == 0,

@@ -70,7 +70,7 @@ void Node::select_network_and_resolve_data_dir() {
 
 storage::StorageOptions Node::load_storage_options_from_config() {
     const std::string config_file = config_.data_dir + "/geocoin.conf";
-    write_default_node_config_if_missing(config_file);
+    write_default_node_config_if_missing(config_file, config_.network);
     apply_storage_config_from_file(config_, config_file);
     apply_runtime_config_from_file(config_, config_file);
 

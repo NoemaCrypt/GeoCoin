@@ -10,6 +10,7 @@ namespace geocoin::network {
  */
 static constexpr int DEFAULT_P2P_PORT = 3030;
 static constexpr int DEFAULT_TESTNET_P2P_PORT = 13030;
+inline constexpr const char* DEFAULT_MAINNET_SEED_NODE = "45.12.114.4:3030";
 
 /**
  * @brief Shared DNS seed configuration for discovery and node startup.
@@ -30,15 +31,18 @@ inline const std::vector<std::string>& get_dns_seed_hostnames(bool use_testnet) 
 /**
  * @brief Резервные seed endpoints.
  *
- * Используем те же публичные hostnames, но уже как host:port endpoints для
- * прямых outbound attempts, если DNS batch seeding не вернул адресов.
+ * Mainnet includes a literal IP endpoint so bootstrap works without DNS.
+ * Public hostnames remain additional endpoints for outbound attempts.
  */
 inline std::vector<std::string> get_hardcoded_seed_nodes(bool use_testnet) {
     const auto& hosts = get_dns_seed_hostnames(use_testnet);
     const int port = use_testnet ? DEFAULT_TESTNET_P2P_PORT : DEFAULT_P2P_PORT;
 
     std::vector<std::string> seeds;
-    seeds.reserve(hosts.size());
+    seeds.reserve(hosts.size() + (use_testnet ? 0 : 1));
+    if (!use_testnet) {
+        seeds.emplace_back(DEFAULT_MAINNET_SEED_NODE);
+    }
     for (const auto& host : hosts) {
         seeds.push_back(host + ":" + std::to_string(port));
     }
