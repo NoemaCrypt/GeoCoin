@@ -220,14 +220,11 @@ void network_bootstrap_plans() {
         const bool testnet = network == consensus::Network::TESTNET;
         const auto plan = node::detail::build_peer_bootstrap_plan(config, false, testnet);
         const std::string label = config.network + ": ";
-        if (network == consensus::Network::LOADNET) {
-            check(plan.default_seed_nodes.empty(), label + "public discovery is disabled");
+        if (network != consensus::Network::MAIN) {
+            check(plan.default_seed_nodes.empty(), label + "no public bootstrap peers are configured");
         } else {
-            const std::string suffix = testnet ? ":13030" : ":3030";
-            check(!plan.default_seed_nodes.empty() &&
-                      std::all_of(plan.default_seed_nodes.begin(), plan.default_seed_nodes.end(),
-                          [&](const auto& endpoint) { return endpoint.ends_with(suffix); }),
-                  label + "public seeds retain their network-specific ports");
+            check(plan.default_seed_nodes == std::vector<std::string>{"45.12.114.4:3030"},
+                  label + "bootstrap uses only the operational mainnet endpoint");
         }
         const std::string local = "127.0.0.1:" + std::to_string(consensus::Params().default_port());
         check(!plan.base_priority_targets.empty() &&

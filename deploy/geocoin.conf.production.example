@@ -8,8 +8,6 @@ activation-manifest=activation-manifest.json
 
 # Keep wallet/admin RPC private and bound to loopback.
 addnode=45.12.114.4:3030
-addnode=seed1.geocoin.network:3030
-addnode=seed2.geocoin.network:3030
 
 # Network, ports, RPC credentials and data-dir are runtime-only CLI options.
 # Example service-level flags:

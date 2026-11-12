@@ -346,16 +346,13 @@ void test_dns_resolver_local_and_invalid_inputs()
 
     const auto mainnet_seeds = geocoin::network::get_hardcoded_seed_nodes(false);
     const auto testnet_seeds = geocoin::network::get_hardcoded_seed_nodes(true);
-    expect(!mainnet_seeds.empty(), "mainnet fallback seeds are present");
-    expect(!testnet_seeds.empty(), "testnet fallback seeds are present");
-    expect(std::all_of(mainnet_seeds.begin(), mainnet_seeds.end(), [](const std::string& value) {
-               return value.ends_with(":3030");
-           }),
-           "mainnet fallback seeds use default P2P port");
-    expect(std::all_of(testnet_seeds.begin(), testnet_seeds.end(), [](const std::string& value) {
-               return value.ends_with(":13030");
-           }),
-           "testnet fallback seeds use default testnet P2P port");
+    expect(mainnet_seeds == std::vector<std::string>{"45.12.114.4:3030"},
+           "mainnet uses only the operational fixed bootstrap endpoint");
+    expect(testnet_seeds.empty(), "testnet has no unverified fallback seeds");
+    expect(geocoin::network::get_dns_seed_hostnames(false).empty(),
+           "mainnet does not attempt retired DNS seeds");
+    expect(geocoin::network::get_dns_seed_hostnames(true).empty(),
+           "testnet does not attempt retired DNS seeds");
 }
 
 } // namespace

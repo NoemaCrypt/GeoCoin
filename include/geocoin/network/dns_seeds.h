@@ -16,15 +16,10 @@ inline constexpr const char* DEFAULT_MAINNET_SEED_NODE = "45.12.114.4:3030";
  * @brief Shared DNS seed configuration for discovery and node startup.
  */
 inline const std::vector<std::string>& get_dns_seed_hostnames(bool use_testnet) {
-    static const std::vector<std::string> kMainnetSeeds = {
-        "seed.geocoin.network",
-        "seed1.geocoin.network",
-        "seed2.geocoin.network",
-    };
-    static const std::vector<std::string> kTestnetSeeds = {
-        "testnet-seed.geocoin.network",
-        "testnet-seed1.geocoin.network",
-    };
+    // No operational DNS seeds are configured. Mainnet uses the fixed endpoint
+    // below; testnet peers must be supplied explicitly.
+    static const std::vector<std::string> kMainnetSeeds;
+    static const std::vector<std::string> kTestnetSeeds;
     return use_testnet ? kTestnetSeeds : kMainnetSeeds;
 }
 
@@ -32,7 +27,7 @@ inline const std::vector<std::string>& get_dns_seed_hostnames(bool use_testnet) 
  * @brief Резервные seed endpoints.
  *
  * Mainnet includes a literal IP endpoint so bootstrap works without DNS.
- * Public hostnames remain additional endpoints for outbound attempts.
+ * Configured DNS hostnames, when available, are additional endpoints.
  */
 inline std::vector<std::string> get_hardcoded_seed_nodes(bool use_testnet) {
     const auto& hosts = get_dns_seed_hostnames(use_testnet);

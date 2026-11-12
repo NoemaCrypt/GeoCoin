@@ -57,10 +57,8 @@
 - Provider security group must allow only `22/tcp` and `3030/tcp`; `3033/tcp` must fail raw external TCP connect.
 - Confirm every ready entry in `getpeerinfo` reports
   `transport_encrypted=true`, `secure_wire_version=2`, and `secure_suite=1`.
-- Recommended hostnames:
-  - `seed.geocoin.network`
-  - `seed1.geocoin.network`
-  - `seed2.geocoin.network`
+- Mainnet bootstrap endpoint: `45.12.114.4:3030`.
+- No DNS seed hosts are configured. Testnet peers must be supplied explicitly.
 
 ## Security Sign-Off Contract
 - Local admission enforcement is strict: enabling risky transaction construction/relay requires either:

@@ -21,7 +21,8 @@ Bring-up steps:
 9. In the provider security group, allow only `22/tcp` and `3030/tcp`; explicitly deny `3033/tcp` and every unrelated public port.
 10. From an independent external host, verify `3030/tcp` connects and `3033/tcp` does not connect.
 11. Wait for sync and validate `getblockcount` and `getpeerinfo` through loopback RPC using the configured password file. Every ready peer must report `transport_encrypted=true`, `secure_wire_version=2`, and `secure_suite=1`.
-12. Only then publish DNS for `seed.geocoin.network`, `seed1.geocoin.network`, or `seed2.geocoin.network`.
+12. Publish only verified bootstrap endpoints. The configured mainnet endpoint is
+    `45.12.114.4:3030`; no DNS seed hosts are currently configured.
 
 All seeds and miners must use the permanent consensus rules from genesis.
 Do not reuse a datadir produced by the discarded launch-rule test chain; reset
