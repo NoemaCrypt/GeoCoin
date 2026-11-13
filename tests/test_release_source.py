@@ -16,6 +16,16 @@ spec.loader.exec_module(source)
 
 
 class ReleaseSourceTests(unittest.TestCase):
+    def test_vendored_dependency_is_in_sbom(self):
+        spec = importlib.util.spec_from_file_location("release_sbom", ROOT / "scripts/generate_sbom.py")
+        sbom = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sbom)
+        component, = sbom._vendored_components(ROOT)
+        self.assertEqual(component["version"], "3.11.3")
+        self.assertEqual(component["hashes"][0]["content"], hashlib.sha256(
+            (ROOT / "include/nlohmann_json.hpp").read_bytes()).hexdigest())
+        self.assertTrue((ROOT / "third_party/nlohmann-json.LICENSE.txt").is_file())
+
     def test_tag_selection_and_movement(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "origin"

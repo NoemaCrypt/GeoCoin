@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import configparser
 import datetime as dt
+import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,23 @@ def _vcpkg_manifest_components(manifest: dict[str, Any]) -> list[dict[str, Any]]
             properties.append({"name": "geocoin:vcpkg-features", "value": ",".join(features)})
         components.append({"type": "library", "name": name, "properties": properties})
     return components
+
+
+def _vendored_components(root: Path) -> list[dict[str, Any]]:
+    header = root / "include/nlohmann_json.hpp"
+    if not header.is_file():
+        return []
+    content = header.read_bytes()
+    versions = [re.search(rb"#define NLOHMANN_JSON_VERSION_" + part + rb"\s+(\d+)", content)
+                for part in (b"MAJOR", b"MINOR", b"PATCH")]
+    if not all(versions):
+        raise ValueError("Cannot identify the vendored nlohmann JSON version")
+    version = ".".join(match.group(1).decode("ascii") for match in versions)
+    return [{"type": "library", "name": "nlohmann-json", "version": version,
+             "licenses": [{"license": {"id": "MIT"}}],
+             "hashes": [{"alg": "SHA-256", "content": hashlib.sha256(content).hexdigest()}],
+             "properties": [{"name": "geocoin:source", "value": "vendored-header"}],
+             "externalReferences": [{"type": "vcs", "url": "https://github.com/nlohmann/json"}]}]
 
 
 def _submodule_components(root: Path) -> list[dict[str, Any]]:
@@ -279,6 +298,7 @@ def main() -> int:
         components.extend(_vcpkg_manifest_components(manifest))
 
     components.extend(_submodule_components(root))
+    components.extend(_vendored_components(root))
 
     if args.resolved_root:
         resolved_roots = []
