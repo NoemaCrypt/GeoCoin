@@ -6,7 +6,6 @@
 #include "geocoin/state/records.hpp"
 #include "geocoin/utils/bytes.hpp"
 #include "nlohmann_json.hpp"
-#include "geocoin/utils/int128.hpp"
 
 #include <fstream>
 #include <functional>
@@ -281,20 +280,24 @@ void test_payout_spent_in_same_block() {
 
 void test_integer_shares() {
     const Amount maximum = (std::numeric_limits<Amount>::max)();
-    const std::vector<std::array<Amount, 3>> vectors{
-        {1000, 1, 1}, {2000, 1, 1}, {3001, 1, 2}, {1000001, 499, 501},
-        {21000000LL * COIN, maximum - 1, 1}, {21000000LL * COIN, maximum / 2, maximum / 2},
-        {1234567890123, 123456789012345, 987654321098765}, {987654321, 1, maximum - 1}};
+    // Golden payouts were computed with arbitrary-precision integer arithmetic:
+    // floor(pool * balance / (a + b)). Avoid requiring __divti3 from ClangCL's
+    // runtime just to evaluate the test oracle; production arithmetic is unchanged.
+    const std::vector<std::array<Amount, 5>> vectors{
+        {1000, 1, 1, 500, 500}, {2000, 1, 1, 1000, 1000},
+        {3001, 1, 2, 1000, 2000}, {1000001, 499, 501, 499000, 501000},
+        {21000000LL * COIN, maximum - 1, 1, 2099999999999999, 0},
+        {21000000LL * COIN, maximum / 2, maximum / 2, 1050000000000000, 1050000000000000},
+        {1234567890123, 123456789012345, 987654321098765, 137174208902, 1097393681220},
+        {987654321, 1, maximum - 1, 0, 987654320}};
     for (size_t i = 0; i < vectors.size(); ++i) {
-        const auto [pool, a, b] = vectors[i];
+        const auto [pool, a, b, payout_a, payout_b] = vectors[i];
         Fixture f(pool, false);
         f.add_holder(1, holder(81), a);
         f.add_holder(2, holder(82), b);
         std::map<std::string, Amount> expected;
         Amount expected_total = 0;
-        for (const auto& [address, value] : std::vector<std::pair<Address, Amount>>{{holder(81), a}, {holder(82), b}}) {
-            const int128_t payout = int128_t(pool) * value / (int128_t(a) + b);
-            const Amount amount = static_cast<Amount>(payout);
+        for (const auto& [address, amount] : std::vector<std::pair<Address, Amount>>{{holder(81), payout_a}, {holder(82), payout_b}}) {
             if (amount >= consensus::params::DUST_LIMIT) { expected[address.str()] = amount; expected_total += amount; }
         }
         std::vector<core::TxOutput> outputs;
