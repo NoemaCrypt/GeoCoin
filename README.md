@@ -17,7 +17,13 @@ GeoCoin is a UTXO blockchain with geographic proof of work, post-quantum
 signatures, and encrypted traffic between nodes. This repository contains the
 full node, the Qt wallet, miners, database tools, and a C SDK.
 
-**Status:** in development until mainnet launch. RPC API version **1**.
+**Status:** public mainnet software, under active development. RPC API version **1**.
+For exchange integration, see [the node and wallet RPC guide](docs/exchange-integration.txt).
+
+**Foundation:** the genesis subsidy (50 GC) and 10% of each block's subsidy plus
+fees at heights 1–209999 go to `GEOM3PyazNssCYYzF3tW9YrsSwszLq45QXbAZv`,
+with 3-of-4 multisig authorization. From height 210000 that share goes to the
+consensus interest pool. [Exact rules and integration details](docs/exchange-integration.txt).
 
 ## Features
 
@@ -122,6 +128,11 @@ Node options are printed by `geocoin-node --help`. To load an encrypted wallet,
 pass `--wallet-password-file`. Use a separate data directory for each node
 instance.
 
+For an exchange server, start with **4 vCPU, 8 GiB RAM and a 250 GB SSD** and
+monitor storage growth. The headless Linux node needs no Qt, GPU or display.
+A small 300-block test under a 2-CPU / 2-GiB limit peaked at 107.3 MiB RSS;
+this is not a mainnet sizing guarantee. [Measurements and capacity limits](docs/exchange-integration.txt).
+
 ### Networks
 
 | Identifier | Role | P2P | RPC |
@@ -215,7 +226,13 @@ GeoCoin — UTXO-блокчейн с географическим Proof of Work,
 подписями и шифрованным обменом между нодами. Репозиторий содержит полную ноду,
 Qt-кошелёк, майнеры, инструменты обслуживания базы и C SDK.
 
-**Статус:** разработка до запуска основной сети. Версия RPC API — **1**.
+**Статус:** ПО публичной основной сети, активная разработка. Версия RPC API — **1**.
+Для интеграции с биржей: [инструкция ноды и кошелечного RPC](docs/exchange-integration.txt).
+
+**Фонд:** награда genesis (50 GC) и 10% субсидии вместе с комиссиями блоков
+1–209999 поступают на `GEOM3PyazNssCYYzF3tW9YrsSwszLq45QXbAZv`
+с мультиподписью 3 из 4. С высоты 210000 эта доля поступает в процентный пул
+консенсуса. [Точные правила и интеграция](docs/exchange-integration.txt).
 
 ## Возможности
 
@@ -319,6 +336,12 @@ cmake --build --preset windows-clang-static-release-gui --parallel
 Параметры ноды доступны через `geocoin-node --help`. Для загрузки зашифрованного
 кошелька укажите `--wallet-password-file`; для разных экземпляров ноды используйте
 отдельные каталоги данных.
+
+Для биржевого сервера начальная рекомендация — **4 vCPU, 8 GiB RAM и SSD
+250 GB** с контролем роста базы. Linux-нода работает без Qt, видеокарты и экрана.
+В небольшом тесте на 300 блоках при лимите 2 CPU / 2 GiB пик RSS составил
+107,3 MiB; это не оценка ёмкости основной сети.
+[Замеры и ограничения](docs/exchange-integration.txt).
 
 ### Сети
 

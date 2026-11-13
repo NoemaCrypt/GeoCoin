@@ -5,6 +5,13 @@
 
 These methods manage the local wallet and build/broadcast transactions. Public chain/mempool/NFT getters are categorized as `blockchain`, `mempool`, and `nft` in `getrpcinfo`, even when they are documented next to wallet workflows.
 
+
+Exchange RPC API 1 includes `gettransaction`, `listsinceblock`, `getwalletinfo`,
+`estimatesmartfee`, `encryptwallet`, `walletpassphrase`, `walletlock`,
+`walletpassphrasechange`, `backupwallet`, `restorewallet` and `rescanblockchain`.
+See [exchange integration](../exchange-integration.txt) for exact units, reorganization
+handling, lock semantics, independent-key backups and the single-wallet restore interface.
+
 ## 1) Wallet and addresses
 
 - `createwallet` — create/initialize the wallet.
@@ -35,7 +42,7 @@ to disable history recovery explicitly.
 - `sendtoaddress` — build/sign/broadcast a transaction.
 - `sendrawtransaction <hex>` — broadcast a raw transaction (verify + mempool).
 - `verifyrawtransaction <hex>` — verify a raw tx without mempool admission (`readonly`, `mempool` category).
-- `listtransactions` — legacy account-style wallet transaction history; deprecated for new clients.
+- `listtransactions` — recent output-level wallet history with signed amounts; poll using `listsinceblock`.
 
 ### Raw transaction builder
 

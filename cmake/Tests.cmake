@@ -24,6 +24,7 @@ geocoin_enable_test_debug_env(
     test_rpc_http_security
     test_rpc_security_matrix
     test_rpc_units
+    test_exchange_wallet
     test_rpc_payload_handlers
     test_rpc_info_handlers
     test_wallet_chainstate_integration

@@ -23,6 +23,8 @@
         "docs/release-admin.txt": "README.txt",
         "config/activation-manifest.production.json": "config/activation-manifest.production.json",
         "deploy/geocoin.conf.production.example": "deploy/geocoin.conf.production.example",
+        "deploy/geocoin.conf.exchange.example": "deploy/geocoin.conf.exchange.example",
+        "docs/exchange-integration.txt": "EXCHANGE.txt",
         "deploy/geocoin.conf.seed.example": "deploy/geocoin.conf.seed.example",
         "deploy/systemd/geocoin-node.service": "deploy/systemd/geocoin-node.service",
         "deploy/firewall/geocoin-node-ufw.sh": "deploy/firewall/geocoin-node-ufw.sh",

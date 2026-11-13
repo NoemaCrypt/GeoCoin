@@ -1,0 +1,139 @@
+GeoCoin exchange integration — RPC API 1
+
+NODE
+Use the Linux administration bundle and geocoin-node. Qt, a desktop session,
+a GPU and a miner are not required. Linux x86_64 requires glibc 2.35 or newer.
+Run one node per data directory and retain complete history for exchange use.
+Use /var/lib/geocoin/degree as the explicit data directory below and install
+deploy/geocoin.conf.exchange.example there as geocoin.conf before first start.
+archive=1 and node-type=full preserve block history.
+The mainnet bootstrap peer is 45.12.114.4:3030. P2P is TCP 3030; RPC is 3033.
+
+Example foreground service command:
+  geocoin-node --network degree --data-dir /var/lib/geocoin/degree --rpc \
+    --rpc-bind 127.0.0.1 --rpc-user exchange \
+    --rpc-pass-file /etc/geocoin/rpc.pass
+The password file contains its password on the first line and should be
+readable only by the service account. Adapt the supplied systemd unit.
+Use --version to identify the application build and RPC API version.
+getblockchaininfo and getsyncstatus expose chain/synchronization status;
+getwalletinfo separately reports wallet scan completeness and its last block.
+Do not credit deposits before the wallet has processed the active chain.
+
+SERVER SIZING
+Start an exchange node with 4 vCPU, 8 GiB RAM and a 250 GB SSD, then monitor
+growth and expand storage. This is a starting recommendation, not a measured
+long-term minimum. No GPU or desktop environment is required.
+On 2026-11-13, a Linux headless test was limited to 2 logical CPUs and 2 GiB RAM
+on an Intel Core i9-14900HX host. It generated and validated 300 local loadnet
+blocks with 101 wallet addresses while the encrypted wallet remained locked.
+Peak node RSS was 107.3 MiB; data used 8.15 MiB logically and 279.1 MiB allocated
+with RocksDB preallocation. A separate 400-call getwalletinfo batch at concurrency
+8 achieved 1148 requests/s, with p50 6.44 ms and p95 9.86 ms in that test.
+This small local test does not establish mainnet capacity or full-block throughput.
+At the 4,000,000-byte block limit and 600-second target, block bodies alone can
+add about 576 MB/day (210 GB/year), excluding indexes, state and wallet history.
+The current wallet snapshot has a 256 MiB input limit; monitor wallet.dat size
+and arrange capacity changes before reaching it. Deposit polling should use
+listsinceblock cursors rather than repeatedly requesting all wallet history.
+
+WALLET AND DEPOSITS
+createwallet "passphrase" creates the single local wallet encrypted and locked.
+An existing wallet is never replaced by createwallet. Private keys are held
+in an AES-256-GCM key vault; the password wraps a random 256-bit master key
+using PBKDF2-HMAC-SHA256 with 600,000 iterations. Public wallet history remains
+readable and can be saved while private keys are locked. The wallet file is
+owner-readable only. It contains public addresses, labels and transaction history.
+Restarting a vault wallet does not require its password and starts it locked.
+
+walletpassphrase "passphrase" timeout unlocks keys for 1..86400 seconds.
+walletlock closes the wallet immediately. A repeated walletpassphrase replaces
+the previous deadline. walletpassphrasechange "old" "new" atomically rewrites
+the password wrapper, preserving the current locked/unlocked state.
+encryptwallet "passphrase" encrypts an existing unprotected wallet and locks it.
+Existing protected wallet files remain readable; walletpassphrase also enables
+the key-vault lifecycle for them after authenticating their password.
+
+getnewaddress "label" requires an unlocked vault, as keys are independent random
+keys rather than public HD derivations. Receiving at issued addresses, reading
+history, scanning blocks and making backups do not require an unlock.
+The headless node updates wallet history continuously, including while locked.
+
+gettransaction "txid" (include_watchonly=false verbose=false) returns the
+wallet transaction's signed amount, fee, confirmations, blockhash, blockheight,
+blockindex, blocktime, time, timereceived, walletconflicts, details and hex.
+verbose=true additionally returns decoded transaction data.
+details contains one entry per relevant output with address, vout, category
+and amount. Send amounts and send fees are negative. Change is omitted.
+fromme identifies transactions spending wallet inputs. When local annotations
+were not in the restored backup, outputs returning to input addresses are
+classified as change, preventing them from being credited as fresh deposits.
+Unconfirmed transactions have 0 confirmations; confirmed conflicts and their
+descendants have negative confirmations. Coinbase categories are immature,
+generate or orphan; GeoCoin coinbase maturity is 100 confirmations.
+
+listsinceblock (blockhash target_confirmations=1 include_watchonly=false
+               include_removed=true include_change=false)
+returns transactions, removed and lastblock. Persist lastblock only after
+processing the complete response. target_confirmations changes lastblock;
+it does not filter transactions. With no blockhash, the call lists the wallet's
+history. Unknown or unavailable block cursors produce an explicit error.
+Use the pair (txid, vout), together with the category where relevant, to make
+deposit processing idempotent. Repeated requests may return the same entries.
+Process removed entries to reverse credits from a detached chain branch;
+gettransaction gives the transaction's current active-chain confirmation state.
+Neither an unavailable history segment nor a concurrent chain change is
+reported as an empty successful response. Retry chain-change errors.
+
+listtransactions (account="*" count=10 skip=0 include_watchonly=true) uses the
+same output entries and signed amounts. Pages count backward from the newest
+entries and return each page oldest first. count is at most 1000 and skip at
+most 100000. account accepts * or an address. Use listsinceblock for polling.
+The current interface is a documented Bitcoin-style subset: it does not provide
+Bitcoin descriptors, multiple loaded wallets, or the Bitcoin witness-size model.
+
+WITHDRAWALS AND FEES
+Unlock briefly, call sendtoaddress and record its returned txid. The signed
+transaction is saved before admission; accepted outgoing transactions are saved
+before RPC success and are retried after headless restart if still unconfirmed.
+If an RPC reports acceptance followed by a persistence failure, its error
+includes the txid: query that transaction before retrying a withdrawal.
+
+1 GC = 100,000,000 angles. Internal money calculations use integer angles.
+Standard amount and fee fields are GC; *_angles fields are exact integers.
+estimatesmartfee conf_target (estimate_mode="conservative") uses transactions
+observed before their inclusion, their waits in blocks, and still-waiting or
+removed transactions. Modes are conservative and economical; targets are 1..1008.
+feerate is GC per 1000 serialized bytes, not Bitcoin virtual kilobytes.
+If observations are insufficient, the result has errors and no feerate.
+Use an explicit configured fallback policy rather than treating this as zero.
+getfeerate remains a bounded mempool-occupancy recommendation; it does not
+promise confirmation within a specified number of blocks. Fee statistics are
+a replaceable, network-bound local cache and are corrected on reorganization.
+
+BACKUP, RESTORE AND RECOVERY
+backupwallet "new-file" writes a consistent encrypted backup while locked.
+It never overwrites an existing destination or the live wallet.
+Keep backups outside the node. These are independent random keys: a backup
+made before new addresses were generated cannot recover those later keys.
+Back up after issuing address batches and after changing the passphrase.
+Wallet backups and geocoin-db database backups are separate operations.
+
+restorewallet "backupfile" restores into an empty wallet with an unused wallet
+path, starts it locked and reconciles its history with the current active chain.
+The single-wallet interface intentionally has no wallet_name parameter.
+rescanblockchain (start_height=0) explicitly rebuilds history from available
+blocks. Pruned or missing history is an error; provide full block history first.
+A damaged vault file fails to open rather than silently substituting an older
+backup that might lack recently issued keys. Restore a chosen backup explicitly.
+
+FOUNDATION RULES
+Mainnet foundation address: GEOM3PyazNssCYYzF3tW9YrsSwszLq45QXbAZv.
+Spending requires 3 of the 4 committed foundation participants.
+Genesis pays its complete 50 GC subsidy to the foundation.
+At heights 1..209999, 10% of subsidy plus transaction fees goes to this address.
+Starting at height 210000 the 10% share is redirected to the consensus interest
+pool, rather than being paid as a foundation coinbase output. It is not removed
+from the reward calculation. These are existing consensus rules; the exchange
+RPC update does not change genesis, signatures, rewards or chain selection.
+The project's maintainers supply the actual spending policy and public reports.

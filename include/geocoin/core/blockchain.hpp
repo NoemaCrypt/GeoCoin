@@ -9,6 +9,7 @@
 #include "geocoin/state/state.hpp"
 #include "geocoin/storage/block_storage.hpp"
 #include <memory>
+#include <optional>
 #include <map>
 #include <set>
 #include <mutex>
@@ -284,6 +285,19 @@ public:
 
     // Capture branch membership and confirmations under the same chain lock.
     BlockPositionSnapshot get_block_position(const Hash256& hash) const;
+    std::optional<Height> get_active_fork_height(const Hash256& hash) const {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        const auto found = block_index_.find(hash);
+        if (found == block_index_.end()) return std::nullopt;
+        const auto* fork = chain_active_.find_fork(found->second.get());
+        return fork ? std::optional<Height>(fork->height) : std::nullopt;
+    }
+    bool is_block_ancestor(const Hash256& ancestor, const Hash256& descendant) const {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        const auto a = block_index_.find(ancestor), d = block_index_.find(descendant);
+        if (a == block_index_.end() || d == block_index_.end()) return false;
+        return d->second->get_ancestor(a->second->height) == a->second.get();
+    }
     std::vector<storage::BlockStorage::BlockGeographyRecord> get_block_geography_page(Height first, size_t limit) const;
 
     /**

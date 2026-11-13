@@ -55,7 +55,7 @@ if(TARGET geocoin-node AND Python3_Interpreter_FOUND)
                 --network degree-test
                 --min-height 0
                 --sync-timeout 45
-                --no-default-addnodes
+                --isolated
     )
     set_tests_properties(test_rpc_localnet_fullnode_smoke PROPERTIES
         TIMEOUT 90
@@ -307,6 +307,7 @@ if(GEOCOIN_ENABLE_RPC_INTEGRATION_TESTS)
         NAME test_rpc_fullnode_smoke
         COMMAND ${Python3_EXECUTABLE}
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/rpc_smoke.py"
+                --isolated
                 --node-bin $<TARGET_FILE:geocoin-node>
                 --data-dir "${CMAKE_CURRENT_BINARY_DIR}/rpc-smoke-data"
                 --clean-data-dir

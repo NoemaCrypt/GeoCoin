@@ -23,6 +23,9 @@ inline bool SyncDebugEnabled() {
 
 WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chain_state, Height from_height) {
     std::unique_lock<std::recursive_mutex> scan_lock(scan_mutex_);
+    ++scan_jobs_;
+    struct ScanJobGuard { std::atomic<uint32_t>& count; ~ScanJobGuard() { --count; } } scan_job{scan_jobs_};
+    scan_abort_requested_.store(false);
     WalletScanResult result;
     result.next_height = from_height;
     const auto finish = [&]() {
@@ -58,13 +61,13 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
             std::lock_guard<std::mutex> lock(mutex_);
             for (auto& tx : transactions_) {
                 if (tx.block_height != 0 && tx.block_height >= reset_from) {
-                    tx.block_height = 0;
-                    tx.mark_dirty();
+                    tx.disconnect();
                     changed.push_back(tx.tx_hash);
                 }
             }
             last_scanned_height_ = cursor;
             last_scanned_block_hash_ = anchor;
+            ++wallet_revision_;
         }
         for (const auto& txid : changed) {
             NotifyTransactionChanged(this, txid);
@@ -103,6 +106,7 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
     std::set<Address> wallet_addresses;
     using Outpoint = std::pair<Hash256, uint32_t>;
     std::map<Outpoint, Amount> owned_outputs;
+    std::map<Outpoint, std::vector<Hash256>> watched_inputs;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (from_height > 0) {
@@ -121,6 +125,8 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
         // genesis/pending records. Only confirmed earlier spends can remove them.
         // Full transactions belonging to other wallets never enter the scan cache.
         for (const auto& wtx : transactions_) {
+            for (const auto& input : wtx.tx.inputs)
+                watched_inputs[{input.prev_tx_hash, input.vout}].push_back(wtx.tx_hash);
             if (wtx.block_height >= from_height) continue;
             for (uint32_t i = 0; i < wtx.tx.outputs.size(); ++i) {
                 const auto& output = wtx.tx.outputs[i];
@@ -156,6 +162,7 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
     result.peak_owned_outputs = owned_outputs.size();
 
     std::vector<WalletTransaction> batch_updates;
+    std::map<Hash256, std::vector<std::pair<Hash256, WalletBlockLocation>>> batch_conflicts;
     std::set<Hash256> batch_seen_txids;
     Height batch_start = from_height;
     Hash256 previous_hash = prefix_hash;
@@ -173,8 +180,7 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
                     existing.block_height <= scanned_height &&
                     batch_seen_txids.count(existing.tx_hash) == 0) {
                     if (existing.block_height != 0) {
-                        existing.block_height = 0;
-                        existing.mark_dirty();
+                        existing.disconnect();
                         changed.insert(existing.tx_hash);
                     }
                 }
@@ -185,6 +191,10 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
                     auto& existing = transactions_[it->second];
                     existing.tx = std::move(update.tx);
                     existing.block_height = update.block_height;
+                    existing.block_hash = update.block_hash;
+                    existing.block_index = update.block_index;
+                    existing.block_time = update.block_time;
+                    if (existing.received_at == 0) existing.received_at = existing.timestamp;
                     existing.timestamp = update.timestamp;
                     existing.amount = update.amount;
                     existing.is_coinbase = update.is_coinbase;
@@ -195,10 +205,18 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
                 }
                 changed.insert(update.tx_hash);
             }
+            for (const auto& [txid, conflicts] : batch_conflicts) {
+                const auto found = tx_index_.find(txid);
+                if (found == tx_index_.end()) continue;
+                for (const auto& [other, location] : conflicts)
+                    transactions_[found->second].note_conflict(other, location);
+            }
             last_scanned_height_ = scanned_height;
             last_scanned_block_hash_ = previous_hash;
+            ++wallet_revision_;
         }
         batch_updates.clear();
+        batch_conflicts.clear();
         batch_seen_txids.clear();
         durable_resume = scanned_height == (std::numeric_limits<Height>::max)() ? scanned_height : scanned_height + 1;
         batch_start = scanned_height == (std::numeric_limits<Height>::max)()
@@ -223,6 +241,12 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
 
     Height batch_counter = 0;
     for (Height h = from_height; h <= result.target_height; ++h) {
+        if (scan_abort_requested_.load() || scan_shutdown_requested_.load()) {
+            result.status = WalletScanStatus::READ_ERROR;
+            result.error = "Wallet scan was aborted";
+            result.next_height = durable_resume;
+            return finish();
+        }
         core::Block block;
         if (!chain_state->get_block_by_height(h, block)) {
             if (batch_counter && !merge_batch(h - 1)) {
@@ -242,8 +266,16 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
             return finish();
         }
         previous_hash = block.get_hash();
+        uint32_t transaction_index = 0;
         for (const auto& tx : block.transactions) {
+            const auto block_index = transaction_index++;
             const auto tx_hash = tx.get_hash();
+            for (const auto& input : tx.inputs) {
+                const auto watched = watched_inputs.find({input.prev_tx_hash, input.vout});
+                if (watched == watched_inputs.end()) continue;
+                for (const auto& txid : watched->second) if (txid != tx_hash)
+                    batch_conflicts[txid].push_back({tx_hash, {previous_hash, h, block_index, block.header.timestamp}});
+            }
             int64_t debit = 0;
             int64_t credit = 0;
             bool valid = true;
@@ -272,7 +304,12 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
             wtx.tx = tx;
             wtx.tx_hash = tx_hash;
             wtx.block_height = h;
+            wtx.block_hash = previous_hash;
+            wtx.block_index = block_index;
+            wtx.block_time = block.header.timestamp;
             wtx.timestamp = block.header.timestamp;
+            wtx.received_at = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
             wtx.amount = net;
             wtx.is_coinbase = tx.is_coinbase();
             batch_seen_txids.insert(tx_hash);
@@ -322,8 +359,7 @@ WalletScanResult Wallet::reconcile_blockchain(
             if (wallet_tx.block_height == 0 || wallet_tx.block_height < start_height) {
                 continue;
             }
-            wallet_tx.block_height = 0;
-            wallet_tx.mark_dirty();
+            wallet_tx.disconnect();
             changed.push_back(wallet_tx.tx_hash);
         }
         if (start_height == 0) {
@@ -359,7 +395,8 @@ Hash256 Wallet::get_last_scanned_block_hash() const {
     return last_scanned_block_hash_;
 }
 
-void Wallet::sync_transaction(const core::Transaction& tx, Height block_height, uint64_t timestamp, std::shared_ptr<state::ChainState> chain_state) {
+void Wallet::sync_transaction(const core::Transaction& tx, Height block_height, uint64_t timestamp,
+    std::shared_ptr<state::ChainState> chain_state, const Hash256& block_hash, uint32_t block_index) {
     if (!chain_state) {
         return;
     }
@@ -380,6 +417,21 @@ void Wallet::sync_transaction(const core::Transaction& tx, Height block_height, 
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
+        if (block_hash != Hash256{} && !tx.is_coinbase()) {
+            std::set<std::pair<Hash256, uint32_t>> inputs;
+            for (const auto& input : tx.inputs) inputs.emplace(input.prev_tx_hash, input.vout);
+            for (auto& other : transactions_) {
+                if (other.tx_hash == tx_hash || other.block_height != 0) continue;
+                if (std::any_of(other.tx.inputs.begin(), other.tx.inputs.end(), [&](const auto& input) {
+                    return inputs.contains({input.prev_tx_hash, input.vout});
+                })) {
+                    const auto previous = other.conflicts.size();
+                    other.note_conflict(tx_hash, {block_hash, block_height, block_index, timestamp});
+                    if (other.conflicts.size() != previous) ++wallet_revision_;
+                }
+            }
+        }
+
         // Проверяем, есть ли уже эта транзакция (как Bitcoin AddToWallet)
         auto existing_it = tx_index_.find(tx_hash);
         bool already_exists = (existing_it != tx_index_.end());
@@ -395,6 +447,14 @@ void Wallet::sync_transaction(const core::Transaction& tx, Height block_height, 
             }
 
             bool updated = false;
+            if (block_hash != Hash256{} && wtx.block_hash != block_hash) {
+                if (wtx.block_hash != Hash256{}) wtx.disconnect();
+                wtx.block_hash = block_hash;
+                wtx.block_index = block_index;
+                wtx.block_time = timestamp;
+                wtx.block_height = block_height;
+                updated = true;
+            }
 
             // Обновляем высоту блока, если изменилась (транзакция подтвердилась)
             if (block_height > 0 && wtx.block_height != block_height) {
@@ -417,6 +477,7 @@ void Wallet::sync_transaction(const core::Transaction& tx, Height block_height, 
             }
 
             if (updated) {
+                ++wallet_revision_;
                 wtx.tx = tx;
 
                 int64_t debit = get_debit_locked(wtx, chain_state);
@@ -437,7 +498,12 @@ void Wallet::sync_transaction(const core::Transaction& tx, Height block_height, 
             wtx.tx = tx;
             wtx.tx_hash = tx_hash;
             wtx.block_height = block_height;
+            wtx.block_hash = block_hash;
+            wtx.block_index = block_index;
+            wtx.block_time = block_hash != Hash256{} ? timestamp : 0;
             wtx.timestamp = timestamp;
+            wtx.received_at = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
             wtx.is_coinbase = tx.is_coinbase();
             wtx.fee = 0;
             wtx.memo = "";
@@ -469,6 +535,7 @@ void Wallet::sync_transaction(const core::Transaction& tx, Height block_height, 
             }
 
             transactions_.push_back(wtx);
+            ++wallet_revision_;
             tx_index_[tx_hash] = transactions_.size() - 1;
             should_notify = true;
         }
@@ -504,11 +571,16 @@ void Wallet::sync_disconnected_block(
             if (wallet_tx.block_height != disconnected_height) {
                 continue;
             }
-            wallet_tx.block_height = 0;
-            wallet_tx.mark_dirty();
+            if (wallet_tx.block_hash == Hash256{}) {
+                wallet_tx.block_hash = block.get_hash();
+                wallet_tx.block_time = block.header.timestamp;
+                wallet_tx.block_index = static_cast<uint32_t>(&tx - block.transactions.data());
+            }
+            wallet_tx.disconnect();
             changed.push_back(tx_hash);
         }
         last_scanned_height_ = std::min(last_scanned_height_, new_tip_height);
+        ++wallet_revision_;
         if (last_scanned_height_ == new_tip_height) {
             last_scanned_block_hash_ = new_tip_hash;
         } else {
@@ -521,6 +593,31 @@ void Wallet::sync_disconnected_block(
     for (const auto& tx_hash : changed) {
         NotifyTransactionChanged(this, tx_hash);
     }
+}
+
+WalletScanResult Wallet::synchronize(std::shared_ptr<state::ChainState> chain_state,
+    std::span<const core::Transaction> pending) {
+    std::lock_guard<std::recursive_mutex> guard(scan_mutex_);
+    if (get_key_count() == 0) return {};
+    const auto cursor = get_last_scanned_height();
+    const auto anchor = get_last_scanned_block_hash();
+    Hash256 active{};
+    bool needs_anchors = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        needs_anchors = std::any_of(transactions_.begin(), transactions_.end(),
+            [](const auto& tx) { return tx.block_height > 0 && tx.block_hash == Hash256{}; });
+    }
+    auto result = chain_state && !needs_anchors && anchor != Hash256{} &&
+        chain_state->get_active_block_hash(cursor, active) && active == anchor ?
+        scan_blockchain(chain_state, cursor + 1) : reconcile_blockchain(chain_state, 0);
+    if (!result.complete()) return result;
+    for (const auto& tx : pending) sync_transaction(tx, 0, tx.timestamp, chain_state);
+    if (is_vault() && !save("")) {
+        result.status = WalletScanStatus::READ_ERROR;
+        result.error = "Wallet history could not be saved durably";
+    }
+    return result;
 }
 
 } // namespace geocoin::wallet

@@ -130,8 +130,19 @@ void test_complete_catalog_role_and_profile_matrix() {
     const auto& mining_registry = RPCServerTestAccess::registry(mining);
     const auto& commands = full_registry.commands();
 
-    expect(commands.size() == 142,
+    expect(commands.size() == 153,
            "full RPC catalog changed without updating the audited role matrix");
+    for (const auto* name : {"gettransaction", "listsinceblock", "getwalletinfo", "encryptwallet",
+             "walletpassphrase", "walletlock", "walletpassphrasechange", "backupwallet", "restorewallet", "rescanblockchain"}) {
+        const auto& command = commands.at(name);
+        expect(command.required_role == RPCAuthRole::ADMIN && command.requires_wallet &&
+                   readonly_registry.find(name) == nullptr && mining_registry.find(name) == nullptr,
+               std::string("private exchange wallet command must retain the wallet/admin boundary: ") + name);
+    }
+    const auto& fee_estimate = commands.at("estimatesmartfee");
+    expect(fee_estimate.required_role == RPCAuthRole::READONLY && !fee_estimate.requires_wallet &&
+               !fee_estimate.mutates && readonly_registry.find("estimatesmartfee") != nullptr,
+           "fee estimation is a public read-only query without wallet access");
     for (const auto* name : {"analyzegeometry", "getnftgeojson", "listblockgeography"}) {
         const auto& command = commands.at(name);
         expect(command.required_role == RPCAuthRole::READONLY && !command.requires_wallet &&

@@ -226,6 +226,7 @@ bool Wallet::create_transaction_with_change(
     WalletTransaction wtx;
     wtx.tx = tx;
     wtx.tx_hash = tx.get_hash();
+    if (tx.outputs.size() > 1) wtx.change_outputs.push_back(1);
     wtx.block_height = 0;  // Еще не в блоке
     wtx.timestamp = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()

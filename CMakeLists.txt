@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(GeoCoin VERSION 0.1.0 LANGUAGES C CXX)
+project(GeoCoin VERSION 0.1.1 LANGUAGES C CXX)
 
 # Keep policy/options before dependencies; each included module uses root scope.
 include(cmake/Options.cmake)

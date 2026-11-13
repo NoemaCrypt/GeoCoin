@@ -1,3 +1,4 @@
+#include "geocoin/utils/version.hpp"
 #include "geocoin/network/peer_manager.hpp"
 #include "geocoin/network/peer_manager_internal.hpp"
 #include "geocoin/network/services.hpp"
@@ -182,7 +183,7 @@ bool PeerManager::send_local_version(PeerContext& ctx) {
     version.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()
     ).count();
-    version.user_agent = "degree/0.2.0";
+    version.user_agent = geocoin::version::USER_AGENT;
     version.height = get_height_callback_ ? get_height_callback_() : 0;
     version.auth_address = ctx.local_auth_address;
     return send_message(ctx.peer, MessageType::VERSION, version.serialize());

@@ -1,0 +1,10 @@
+# Install as /var/lib/geocoin/degree/geocoin.conf and use
+# --network degree --data-dir /var/lib/geocoin/degree.
+# Run geocoin-node with --rpc, credentials from files and --rpc-bind 127.0.0.1.
+config-version=1
+node-type=full
+archive=1
+db-profile=safe
+no-auto-connect=0
+addnode=45.12.114.4:3030
+activation-manifest=activation-manifest.json

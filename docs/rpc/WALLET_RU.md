@@ -5,6 +5,13 @@
 
 Методы этого раздела управляют локальным кошельком и формируют/отправляют транзакции. Публичные chain/mempool/NFT getters вынесены в категории `blockchain`, `mempool`, `nft` в `getrpcinfo`, даже если исторически описаны рядом с wallet workflows.
 
+
+Биржевой RPC API 1 включает `gettransaction`, `listsinceblock`, `getwalletinfo`,
+`estimatesmartfee`, `encryptwallet`, `walletpassphrase`, `walletlock`,
+`walletpassphrasechange`, `backupwallet`, `restorewallet` и `rescanblockchain`.
+Точные единицы, реорганизации, блокировка и восстановление описаны
+в [инструкции интеграции](../exchange-integration.txt).
+
 ## 1) Кошелёк и адреса
 
 - `createwallet` — создать/инициализировать кошелёк.
@@ -35,7 +42,7 @@
 - `sendtoaddress <address> <amount> ...` — создать/подписать/отправить транзакцию.
 - `sendrawtransaction <hex>` — отправить raw транзакцию (проверка + mempool).
 - `verifyrawtransaction <hex>` — проверить транзакцию без добавления в mempool (`readonly`, категория `mempool`).
-- `listtransactions [account] [count] [skip]` — legacy account-style история транзакций кошелька; deprecated для новых клиентов.
+- `listtransactions [account] [count] [skip]` — история по выходам со знаковыми суммами; для опроса используйте `listsinceblock`.
 
 ### Raw transaction builder
 

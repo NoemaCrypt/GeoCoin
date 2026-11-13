@@ -381,7 +381,8 @@ void P2PServer::accept_loop() {
                         "p2p",
                         "Rate limit exceeded by " << peer_ip
                             << " (" << kMaxConnPerWindow << " per " << kWindow.count()
-                            << "s). Temporary ban " << kBanTime.count() << "s"
+                            << "s). Temporary ban "
+                            << std::chrono::duration_cast<std::chrono::seconds>(kBanTime).count() << "s"
                     );
 
                     continue;

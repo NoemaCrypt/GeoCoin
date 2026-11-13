@@ -1379,10 +1379,10 @@ void test_wallet_basic_rpc(uint16_t port, const std::string& wallet_address, con
         const json mempool_after_retry = call_ok(port, "getrawmempool", json::array(), "readonly", "readonly-pass");
         expect_true(mempool_after_retry.size() == 1, "a send without free outputs adds nothing to the mempool");
 
-        // Regression: listtransactions paged from the oldest entry.
-        const json newest = call_ok(port, "listtransactions", json::array({"*", 1, 0}), "admin", "admin-pass");
-        expect_true(newest.is_array() && newest.size() == 1 && newest[0]["txid"] == txid,
-                    "listtransactions returns the most recent wallet transaction first");
+        // Synthetic UTXO heights have no matching active blocks in this fixture.
+        // Detailed history must report the gap, never fabricate confirmations.
+        call_error(port, "listtransactions", json::array({"*", 1, 0}),
+                   geocoin::rpc::RPC_WALLET_ERROR, "admin", "admin-pass");
     }
 
     const json mempool_accept = call_ok(
@@ -1467,6 +1467,7 @@ void test_wallet_account_rpc(
 
     const auto rpc_wallet_path = root / "rpc-wallet-account.dat";
     geocoin::wallet::Wallet::set_default_wallet_path(rpc_wallet_path.string());
+    wallet.clear(); // Account creation gets an empty wallet, never an existing funded one.
 
     call_error(port, "createwallet", json::array(), geocoin::rpc::RPC_INVALID_PARAMETER,
                "admin", "admin-pass");

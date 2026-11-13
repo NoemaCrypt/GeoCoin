@@ -269,7 +269,7 @@ Windows:
 
 ```powershell
 .\out\portable\GeoCoin-windows-x64-static\bin\geocoin-core.exe -platform offscreen --smoke-test -no-auto-connect
-.\out\portable\GeoCoin-windows-x64-static\bin\geocoin-core.exe --gui-e2e-test --data-dir $env:TEMP\geocoin-gui-e2e -addnode=node1.geocoin.network:3030 -addnode=node2.geocoin.network:3030 -addnode=node3.geocoin.network:3030
+.\out\portable\GeoCoin-windows-x64-static\bin\geocoin-core.exe --gui-e2e-test --data-dir $env:TEMP\geocoin-gui-e2e -addnode=45.12.114.4:3030
 ```
 
 Linux:

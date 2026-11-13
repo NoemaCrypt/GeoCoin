@@ -1,4 +1,5 @@
 #pragma once
+#include "geocoin/network/fee_estimator.hpp"
 
 #include "geocoin/types.hpp"
 #include "geocoin/core/transaction.hpp"
@@ -81,6 +82,8 @@ public:
     static constexpr size_t kMaxUnclaimedAngleCommitments = 1024;
 
     Mempool(std::shared_ptr<state::ChainState> chain_state);
+    FeeEstimator& fee_estimator() { return fee_estimator_; }
+    const FeeEstimator& fee_estimator() const { return fee_estimator_; }
     ~Mempool();
 
     /**
@@ -282,6 +285,7 @@ private:
 
     // Транзакции: tx_hash -> entry
     std::map<Hash256, MempoolEntry> transactions_;
+    FeeEstimator fee_estimator_;
 
     // Индекс по комиссиям (для быстрого выбора)
     std::multimap<uint64_t, Hash256, std::greater<uint64_t>> fee_index_;

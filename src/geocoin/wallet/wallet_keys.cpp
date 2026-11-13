@@ -15,6 +15,7 @@ bool Wallet::initialize(const bytes& private_key) {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (vault_locked_locked()) return false;
     // Создаем адрес напрямую из приватного ключа
     KeyInfo info;
     info.private_key.assign(private_key.begin(), private_key.end());
@@ -31,6 +32,8 @@ bool Wallet::initialize(const bytes& private_key) {
     info.used = false;
 
     keys_[info.address] = info;
+    vault_keys_dirty_ = true;
+    ++wallet_revision_;
     primary_address_ = info.address;
     return true;
 }
@@ -38,6 +41,7 @@ bool Wallet::initialize(const bytes& private_key) {
 
 Address Wallet::create_new_key(const std::string& label) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (vault_locked_locked()) return "";
 
     // Генерируем случайный приватный ключ
     bytes private_key;
@@ -61,6 +65,8 @@ Address Wallet::create_new_key(const std::string& label) {
     info.used = false;
 
     keys_[info.address] = info;
+    vault_keys_dirty_ = true;
+    ++wallet_revision_;
 
     return info.address;
 }
@@ -71,6 +77,7 @@ bool Wallet::import_private_key(const bytes& private_key, const std::string& lab
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (vault_locked_locked()) return false;
 
     Address address;
     if (!crypto::compute_address_from_private_key(private_key, address)) {
@@ -91,6 +98,8 @@ bool Wallet::import_private_key(const bytes& private_key, const std::string& lab
     info.used = false;
 
     keys_[address] = info;
+    vault_keys_dirty_ = true;
+    ++wallet_revision_;
     return true;
 }
 
@@ -146,12 +155,14 @@ bool Wallet::get_key_info(const Address& address, KeyInfo& info) const {
     }
 
     info = it->second;
+    if (vault_locked_locked()) utils::cleanse_container(info.private_key);
     return true;
 }
 
 bool Wallet::get_private_key(const Address& address, bytes& private_key) const {
     std::lock_guard<std::mutex> lock(mutex_);
     utils::cleanse_container(private_key);
+    if (vault_locked_locked()) return false;
 
     auto it = keys_.find(address);
     if (it == keys_.end()) {
@@ -203,6 +214,7 @@ void Wallet::mark_address_used(const Address& address) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = keys_.find(address);
     if (it != keys_.end()) {
+        if (!it->second.used) ++wallet_revision_;
         it->second.used = true;
     }
 }
@@ -214,6 +226,12 @@ Address Wallet::get_address() const {
 
 bytes Wallet::export_private_key(const std::string& password) const {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    if (vault_mode_) {
+        if (vault_locked_locked() || (!password.empty() && !verify_vault_password_locked(password))) return {};
+        const auto it = keys_.find(resolve_primary_address(keys_, primary_address_));
+        return it == keys_.end() ? bytes{} : bytes(it->second.private_key.begin(), it->second.private_key.end());
+    }
 
     if (!verify_password_material(
             password,
@@ -237,6 +255,7 @@ bytes Wallet::export_private_key(const std::string& password) const {
 
 void Wallet::remember_password(const std::string& password) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (vault_mode_) return;
 
     bytes salt;
     uint32_t iters = 0;
@@ -263,6 +282,7 @@ void Wallet::remember_password(const std::string& password) {
 
 bool Wallet::verify_password(const std::string& password) const {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (vault_mode_) return verify_vault_password_locked(password);
 
     return verify_password_material(
         password,
@@ -280,6 +300,7 @@ bool Wallet::has_password_protection() const {
 
 void Wallet::clear_password_cache() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (vault_mode_) { lock_keys_locked(); vault_cv_.notify_all(); return; }
     has_password_hash_ = false;
     OPENSSL_cleanse(password_hash_.data(), password_hash_.size());
     if (!password_salt_.empty()) {
@@ -299,6 +320,7 @@ bool Wallet::add_multisig_address(const wallet::MultisigConfig& config) {
     }
 
     multisig_addresses_[address] = config;
+    ++wallet_revision_;
     return true;
 }
 
@@ -321,6 +343,7 @@ bool Wallet::remove_multisig_address(const std::string& address) {
     }
 
     multisig_addresses_.erase(it);
+    ++wallet_revision_;
     return true;
 }
 

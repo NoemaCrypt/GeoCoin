@@ -8,8 +8,14 @@
 #include "geocoin/wallet/multisig.hpp"  // Для MultisigConfig
 #include "geocoin/utils/observer.hpp"
 #include <map>
+#include <limits>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <span>
 #include <vector>
+#include <condition_variable>
+#include <thread>
 #include <unordered_map>
 #include <memory>
 #include <mutex>
@@ -55,6 +61,13 @@ struct KeyInfo {
  *
  * Как в Bitcoin CWalletTx - кэширует дебет/кредит для производительности
  */
+struct WalletBlockLocation {
+    Hash256 hash{};
+    Height height = 0;
+    uint32_t index = 0;
+    Timestamp time = 0;
+};
+
 struct WalletTransaction {
     core::Transaction tx;
     Hash256 tx_hash;
@@ -64,6 +77,34 @@ struct WalletTransaction {
     uint64_t fee;
     bool is_coinbase;
     std::string memo;               // Локальная заметка кошелька, не часть транзакции/txid.
+    Hash256 block_hash{};
+    uint32_t block_index = 0;
+    Timestamp block_time = 0;
+    std::vector<WalletBlockLocation> removed_blocks;
+    std::vector<uint32_t> change_outputs;
+    bool broadcast = false;
+    uint64_t received_at = 0;
+    std::vector<std::pair<Hash256, WalletBlockLocation>> conflicts;
+
+    void note_conflict(const Hash256& txid, const WalletBlockLocation& location) {
+        if (std::none_of(conflicts.begin(), conflicts.end(), [&](const auto& value) {
+            return value.first == txid && value.second.hash == location.hash;
+        })) conflicts.emplace_back(txid, location);
+    }
+
+    void disconnect() {
+        if (block_hash != Hash256{}) {
+            const auto duplicate = std::find_if(removed_blocks.begin(), removed_blocks.end(),
+                [&](const auto& location) { return location.hash == block_hash; });
+            if (duplicate == removed_blocks.end())
+                removed_blocks.push_back({block_hash, block_height, block_index, block_time});
+        }
+        block_height = 0;
+        block_hash = {};
+        block_index = 0;
+        block_time = 0;
+        mark_dirty();
+    }
 
     // Кэш (как в Bitcoin CWalletTx) - только в памяти, не сохраняется на диск
     mutable bool debit_cached;
@@ -90,6 +131,14 @@ struct WalletTransaction {
         debit_cache = 0;
         credit_cache = 0;
     }
+};
+
+struct WalletHistorySnapshot {
+    std::vector<WalletTransaction> transactions;
+    std::vector<Address> addresses;
+    std::vector<Address> spendable_addresses;
+    Height scanned_height = 0;
+    Hash256 scanned_hash{};
 };
 
 /**
@@ -302,6 +351,10 @@ public:
      * @param wallet_tx Транзакция кошелька
      */
     void add_transaction(const WalletTransaction& wallet_tx);
+    bool get_transaction(const Hash256& txid, WalletTransaction& result) const;
+    // History and its scan cursor must be captured under the same lock.
+    WalletHistorySnapshot get_history_snapshot() const;
+    void mark_broadcast_transaction(const Hash256& txid);
 
     /**
      * @brief Получить историю транзакций
@@ -402,6 +455,14 @@ public:
      * @brief Проверить, зашифрован ли кошелек паролем
      */
     bool has_password_protection() const;
+    // Exchange wallet vault v1: public history remains available while keys are locked.
+    bool enable_vault(const std::string& password);
+    bool is_vault() const;
+    bool is_locked() const;
+    bool unlock(const std::string& password, uint32_t timeout_seconds);
+    void lock();
+    uint64_t unlocked_until() const;
+    bool backup(const std::string& destination) const;
 
     /**
      * @brief Очистить кэш пароля
@@ -458,7 +519,13 @@ public:
      * @param timestamp Время блока
      * @param chain_state ChainState для проверки UTXO
      */
-    void sync_transaction(const core::Transaction& tx, Height block_height, uint64_t timestamp, std::shared_ptr<state::ChainState> chain_state);
+    void sync_transaction(const core::Transaction& tx, Height block_height, uint64_t timestamp,
+        std::shared_ptr<state::ChainState> chain_state, const Hash256& block_hash = {}, uint32_t block_index = 0);
+    WalletScanResult synchronize(std::shared_ptr<state::ChainState> chain_state,
+        std::span<const core::Transaction> pending = {});
+    void abort_scan() { scan_abort_requested_.store(true); }
+    void stop_scans() { scan_shutdown_requested_.store(true); abort_scan(); }
+    bool is_scanning() const { return scan_jobs_.load() != 0; }
 
     /** Mark wallet transactions from a disconnected active block unconfirmed. */
     void sync_disconnected_block(
@@ -537,12 +604,34 @@ public:
     ObserverList<Wallet*, Height> NotifyScanProgress;
 
 private:
+    bool vault_mode_ = false;
+    bool vault_keys_dirty_ = true;
+    mutable Hash256 vault_saved_checksum_{};
+    uint64_t wallet_revision_ = 0;
+    mutable uint64_t vault_saved_revision_ = (std::numeric_limits<uint64_t>::max)();
+    bytes wrapped_master_key_;
+    bytes encrypted_keys_;
+    secure_bytes vault_master_key_;
+    std::chrono::steady_clock::time_point unlock_deadline_{};
+    uint64_t unlock_until_ = 0;
+    std::condition_variable vault_cv_;
+    std::thread vault_timer_;
+    bool vault_timer_stop_ = false;
+    void lock_keys_locked();
+    bool vault_locked_locked() const;
+    bool verify_vault_password_locked(const std::string& password) const;
+    bool refresh_vault_keys_locked();
+    bool save_vault_locked(const std::string& filename, bool preserve_backup) const;
+    bool load_vault_locked(const std::string& filename, const std::string& password);
     mutable std::mutex mutex_;
     mutable std::string file_path_;
     mutable SaveStatus last_save_status_{SaveStatus::FAILED};
     // Serialize history scans and chain events without holding mutex_ during disk reads.
     std::recursive_mutex scan_mutex_;
     WalletScanResult last_scan_result_;
+    std::atomic<bool> scan_abort_requested_{false};
+    std::atomic<bool> scan_shutdown_requested_{false};
+    std::atomic<uint32_t> scan_jobs_{0};
 
     // Ключи: address -> KeyInfo
     std::map<Address, KeyInfo> keys_;

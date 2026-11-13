@@ -317,6 +317,7 @@ bool Mempool::add_transaction(const core::Transaction& tx) {
 
     // Добавляем в mempool
     transactions_[tx_hash] = entry;
+    fee_estimator_.transaction_added(tx_hash, fee, tx_size, chain_state_ ? chain_state_->get_height() : 0);
     fee_index_.insert({fee_per_byte, tx_hash});
     if (const auto authorization = tx.get_protocol_authorization_hash()) {
         protocol_authorization_keys_.insert(*authorization);
@@ -494,6 +495,7 @@ bool Mempool::remove_transaction_locked(const Hash256& tx_hash) {
     if (it == transactions_.end()) {
         return false;
     }
+    fee_estimator_.transaction_removed(tx_hash);
 
     // ANGLE_COMMITMENT is a hard dependency of every spend that references
     // it. Removing/evicting the commitment while retaining the spend used to
@@ -1164,8 +1166,15 @@ void Mempool::reconcile_with_chain(
     std::lock_guard<std::mutex> lock(mutex_);
     RevalidationScope scope;
     scope.full = had_disconnect;
+    const Height final_height = chain_state_ ? chain_state_->get_height() : connected.size();
+    const Height fork_height = final_height >= connected.size() ? final_height - connected.size() : 0;
+    if (had_disconnect) fee_estimator_.reorganize(fork_height);
+    Height observed_height = fork_height;
     std::set<Hash256> confirmed;
     for (const auto& block : connected) {
+        std::vector<Hash256> observed;
+        for (const auto& tx : block.transactions) observed.push_back(tx.get_hash());
+        fee_estimator_.block_connected(block.get_hash(), ++observed_height, observed);
         if (!scope.full) {
             note_block_effects_locked(block, scope);
         }
@@ -1239,6 +1248,7 @@ void Mempool::remove_block_transactions(const core::Block& block) {
 
 void Mempool::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
+    fee_estimator_.clear_pending();
 
     // The shared AngleCommitmentStore is a transient verifier index. Remove
     // mempool-owned entries before dropping the corresponding bookkeeping; the

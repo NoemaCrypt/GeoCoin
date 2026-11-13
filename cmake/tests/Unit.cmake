@@ -63,6 +63,13 @@ target_compile_definitions(test_rpc_contract PRIVATE
 geocoin_stage_runtime_dependencies(test_rpc_contract)
 add_test(NAME test_rpc_contract COMMAND test_rpc_contract)
 
+add_executable(test_exchange_wallet tests/test_exchange_wallet.cpp)
+target_link_libraries(test_exchange_wallet PRIVATE geocoin_rpc geocoin_node geocoin_network)
+target_compile_definitions(test_exchange_wallet PRIVATE GEOCOIN_ENABLE_RPC_SERVER_TEST_ACCESS)
+geocoin_stage_runtime_dependencies(test_exchange_wallet)
+add_test(NAME test_exchange_wallet COMMAND test_exchange_wallet)
+set_tests_properties(test_exchange_wallet PROPERTIES LABELS "wallet;rpc;exchange" TIMEOUT 180)
+
 add_executable(test_rpc_payload_handlers tests/test_rpc_payload_handlers.cpp)
 target_link_libraries(
     test_rpc_payload_handlers

@@ -144,6 +144,8 @@ private:
     void register_wallet_basic_account_methods();
     void register_wallet_basic_utxo_methods();
     void register_wallet_basic_transaction_methods();
+    void register_wallet_exchange_methods();
+    void synchronize_wallet();
     void register_wallet_txbuilder_methods();
     void register_wallet_nft_methods();
     void register_wallet_nft_query_methods();

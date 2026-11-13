@@ -70,7 +70,10 @@ ALL_REGISTERED = [
     'sendtoaddress', 'setban', 'setgenerate', 'signanglecommitment', 'signmessage',
     'signrawtransactionwithwallet', 'stop', 'submitblock', 'switchtotip',
     'testmempoolaccept', 'transfernft', 'unprune', 'validateaddress',
-    'verifyrawtransaction', 'verifysignature',
+    'verifyrawtransaction', 'verifysignature', 'gettransaction', 'listsinceblock',
+    'estimatesmartfee', 'encryptwallet', 'walletpassphrase', 'walletlock',
+    'walletpassphrasechange', 'getwalletinfo', 'backupwallet', 'restorewallet',
+    'rescanblockchain',
 ]
 
 
@@ -229,6 +232,8 @@ class RpcSmoke:
         ]
         for seed in self.args.addnode:
             cmd.extend(['--addnode', seed])
+        if self.args.isolated:
+            cmd.append('--no-auto-connect')
         popen_kwargs = {
             'stdout': self.log_file,
             'stderr': subprocess.STDOUT,
@@ -723,6 +728,21 @@ class RpcSmoke:
         self.record('getaddressesbyaccount', ['*'], 'admin', 'success')
         self.record('getfundbalance', [], 'ro', 'success')
         self.record('registermultisig', [wallet_addr, 1, 1, wallet_addr], 'admin', 'success_or_error', allowed={-4, -8, -5})
+        # Exchange wallet RPC: actual lifecycle operations on this isolated wallet.
+        self.record('gettransaction', [first_txid], 'admin', 'error', allowed={-5})
+        self.record('listsinceblock', [best_hash], 'admin', 'success')
+        self.record('estimatesmartfee', [6], 'ro', 'success')
+        self.record('getwalletinfo', [], 'admin', 'success')
+        self.record('rescanblockchain', [0], 'admin', 'success')
+        self.record('walletlock', [], 'admin', 'error', allowed={-15})
+        self.record('encryptwallet', ['smoke-wallet-pass'], 'admin', 'success')
+        self.record('walletpassphrase', ['wrong-pass', 60], 'admin', 'error', allowed={-14})
+        self.record('walletpassphrase', ['smoke-wallet-pass', 60], 'admin', 'success')
+        self.record('walletpassphrasechange', ['smoke-wallet-pass', 'smoke-wallet-new-pass'], 'admin', 'success')
+        self.record('walletlock', [], 'admin', 'success')
+        backup_path = str(Path(self.args.data_dir) / 'exchange-wallet-backup.dat')
+        self.record('backupwallet', [backup_path], 'admin', 'success')
+        self.record('restorewallet', [backup_path], 'admin', 'error', allowed={-4})
         self.record('stop', [], 'admin', 'success')
 
     def wait_stopped(self):
@@ -824,26 +844,24 @@ def find_free_port():
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='GeoCoin JSON-RPC integration smoke test')
     parser.add_argument('--node-bin', required=True)
-    parser.add_argument('--network', default='degree')
+    parser.add_argument('--network')
+    parser.add_argument('--isolated', action='store_true', help='Run a deterministic local loadnet RPC check without public peers')
     parser.add_argument('--data-dir')
     parser.add_argument('--p2p-port', type=int, default=0)
     parser.add_argument('--rpc-port', type=int, default=0)
     parser.add_argument('--sync-timeout', type=int, default=180)
-    parser.add_argument('--min-height', type=int, default=1)
+    parser.add_argument('--min-height', type=int)
     parser.add_argument('--clean-data-dir', action='store_true')
     parser.add_argument('--keep-data-dir', action='store_true')
     parser.add_argument('--addnode', action='append')
-    parser.add_argument('--no-default-addnodes', action='store_true')
     args = parser.parse_args(argv)
-    default_addnodes = [
-        'node1.geocoin.network:3030',
-        'node2.geocoin.network:3030',
-        'node3.geocoin.network:3030',
-    ]
-    if args.addnode is None:
-        args.addnode = [] if args.no_default_addnodes else default_addnodes
-    elif not args.no_default_addnodes:
-        args.addnode = default_addnodes + args.addnode
+    args.addnode = args.addnode or []
+    if args.network is None:
+        args.network = 'degree-load' if args.isolated else 'degree'
+    if args.min_height is None:
+        args.min_height = 0 if args.isolated else 1
+    if args.isolated and args.addnode:
+        parser.error('--isolated cannot be combined with --addnode')
     if args.p2p_port == 0:
         args.p2p_port = find_free_port()
     if args.rpc_port == 0:

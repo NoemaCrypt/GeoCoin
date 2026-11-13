@@ -15,11 +15,40 @@ void Wallet::rebuild_tx_index_locked() {
     }
 }
 
+bool Wallet::get_transaction(const Hash256& txid, WalletTransaction& result) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = tx_index_.find(txid);
+    if (it == tx_index_.end()) return false;
+    result = transactions_[it->second];
+    return true;
+}
+
+WalletHistorySnapshot Wallet::get_history_snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    WalletHistorySnapshot result;
+    result.transactions = transactions_;
+    result.scanned_height = last_scanned_height_;
+    result.scanned_hash = last_scanned_block_hash_;
+    for (const auto& [address, info] : keys_) {
+        result.addresses.push_back(address);
+        result.spendable_addresses.push_back(address);
+    }
+    for (const auto& [address, config] : multisig_addresses_) result.addresses.emplace_back(address);
+    return result;
+}
+
+void Wallet::mark_broadcast_transaction(const Hash256& txid) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = tx_index_.find(txid);
+    if (found != tx_index_.end()) { transactions_[found->second].broadcast = true; ++wallet_revision_; }
+}
+
 void Wallet::add_transaction(const WalletTransaction& wallet_tx) {
     Hash256 tx_hash;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = tx_index_.find(wallet_tx.tx_hash);
+        const auto previous_received = it == tx_index_.end() ? 0 : transactions_[it->second].received_at;
         if (it != tx_index_.end()) {
             transactions_[it->second] = wallet_tx;
         } else {
@@ -27,6 +56,10 @@ void Wallet::add_transaction(const WalletTransaction& wallet_tx) {
             tx_index_[wallet_tx.tx_hash] = transactions_.size() - 1;
         }
         tx_hash = wallet_tx.tx_hash;
+        auto& stored = transactions_[tx_index_.at(tx_hash)];
+        if (stored.received_at == 0) stored.received_at = previous_received ? previous_received :
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        ++wallet_revision_;
     }
 
     // Уведомляем UI (как в Bitcoin)
@@ -134,6 +167,7 @@ bool Wallet::discard_unconfirmed_transaction(const Hash256& tx_hash) {
         }
         transactions_.erase(transactions_.begin() + static_cast<std::ptrdiff_t>(it->second));
         rebuild_tx_index_locked();
+        ++wallet_revision_;
     }
     NotifyTransactionChanged(this, tx_hash);
     return true;

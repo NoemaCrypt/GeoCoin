@@ -33,6 +33,10 @@ bool Wallet::save_to_file(
     bool preserve_backup
 ) const {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (vault_mode_) {
+        if (!password.empty() && !verify_vault_password_locked(password)) return false;
+        return save_vault_locked(filename, preserve_backup);
+    }
     return save_to_file_locked(filename, password, preserve_backup, false);
 }
 
@@ -42,6 +46,27 @@ bool Wallet::change_password(
     const std::string& new_password
 ) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (vault_mode_) {
+        if (new_password.empty()) return false;
+        bytes master;
+        SensitiveBytesGuard guard{master};
+        if (!crypto::decrypt_aes256(wrapped_master_key_, old_password, master) || master.size() != 32) return false;
+        bytes replacement;
+        if (!crypto::encrypt_aes256(master, new_password, replacement)) return false;
+        wrapped_master_key_.swap(replacement);
+        ++wallet_revision_;
+        if (!save_vault_locked(filename, false)) {
+            if (last_save_status_ == SaveStatus::FAILED) wrapped_master_key_.swap(replacement);
+            return false;
+        }
+        std::error_code error;
+        std::filesystem::remove(filename + ".bak", error);
+        if (error || !sync_parent_directory(filename)) {
+            last_save_status_ = SaveStatus::COMMITTED_NOT_DURABLE;
+            return false;
+        }
+        return true;
+    }
     if (new_password.empty() || !has_password_hash_ ||
         !verify_password_material(
             old_password,
@@ -256,6 +281,37 @@ bool Wallet::save_to_file_locked(
     const auto primary = resolve_primary_address(keys_, primary_address_).str();
     append_u32_le(buffer, static_cast<uint32_t>(primary.size()));
     buffer.insert(buffer.end(), primary.begin(), primary.end());
+
+    const bool has_locations = std::any_of(transactions_.begin(), transactions_.end(),
+        [](const auto& tx) { return tx.block_hash != Hash256{} || !tx.removed_blocks.empty() || !tx.change_outputs.empty() || tx.broadcast || !tx.conflicts.empty() || tx.received_at; });
+    if (has_locations) {
+        append_u32_le(buffer, 0x31584557); // WEX1: optional wallet history extension.
+        append_u32_le(buffer, static_cast<uint32_t>(transactions_.size()));
+        for (const auto& tx : transactions_) {
+            buffer.insert(buffer.end(), tx.block_hash.begin(), tx.block_hash.end());
+            append_u32_le(buffer, tx.block_index);
+            append_u64_le(buffer, tx.block_time);
+            append_u32_le(buffer, static_cast<uint32_t>(tx.removed_blocks.size()));
+            for (const auto& location : tx.removed_blocks) {
+                buffer.insert(buffer.end(), location.hash.begin(), location.hash.end());
+                append_u64_le(buffer, location.height);
+                append_u32_le(buffer, location.index);
+                append_u64_le(buffer, location.time);
+            }
+            append_u32_le(buffer, static_cast<uint32_t>(tx.change_outputs.size()));
+            for (auto index : tx.change_outputs) append_u32_le(buffer, index);
+            buffer.push_back(tx.broadcast ? 1 : 0);
+            append_u64_le(buffer, tx.received_at);
+            append_u32_le(buffer, static_cast<uint32_t>(tx.conflicts.size()));
+            for (const auto& [other, location] : tx.conflicts) {
+                buffer.insert(buffer.end(), other.begin(), other.end());
+                buffer.insert(buffer.end(), location.hash.begin(), location.hash.end());
+                append_u64_le(buffer, location.height);
+                append_u32_le(buffer, location.index);
+                append_u64_le(buffer, location.time);
+            }
+        }
+    }
 
     // Шифруем только если есть пароль
     if (buffer.size() > kMaxWalletPayloadSize) {

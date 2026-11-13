@@ -189,8 +189,13 @@ std::string submit_wallet_transaction_to_mempool(
     bool include_type_in_validation_error,
     const std::shared_ptr<services::ChainMutationService>& chain_mutations
 ) {
+    if (wallet.is_vault() && !wallet.save("")) {
+        wallet.discard_unconfirmed_transaction(tx.get_hash());
+        throw RPCException(RPC_WALLET_ERROR, "Cannot persist the signed transaction before broadcast");
+    }
+    std::string txid;
     try {
-        return submit_transaction_to_mempool(
+        txid = submit_transaction_to_mempool(
             tx,
             chain_state,
             label,
@@ -200,8 +205,13 @@ std::string submit_wallet_transaction_to_mempool(
         );
     } catch (...) {
         wallet.discard_unconfirmed_transaction(tx.get_hash());
+        if (wallet.is_vault()) (void)wallet.save("");
         throw;
     }
+    wallet.mark_broadcast_transaction(tx.get_hash());
+    if (wallet.is_vault() && !wallet.save(""))
+        throw RPCException(RPC_WALLET_ERROR, "Transaction accepted but wallet save failed; check txid " + txid + " before retrying");
+    return txid;
 }
 
 std::vector<core::Transaction> pending_mempool_transactions(const network::Mempool* mempool) {

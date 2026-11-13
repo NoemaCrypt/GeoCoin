@@ -881,9 +881,7 @@ bool WalletModel::isWalletEncrypted() const
 
 bool WalletModel::isWalletLocked() const
 {
-    // GeoCoin wallets don't have lock/unlock state
-    // Password is required for each transaction
-    return false;
+    return wallet_ && wallet_->is_locked();
 }
 
 bool WalletModel::verifyPassword(const QString &password) const
@@ -895,7 +893,7 @@ bool WalletModel::verifyPassword(const QString &password) const
     std::string pwd = password.toStdString();
     GUIUtil::ScopedStringCleanser passwordCleanser(pwd);
 
-    return wallet_->verify_password(pwd);
+    return wallet_->is_vault() ? wallet_->unlock(pwd, 60) : wallet_->verify_password(pwd);
 }
 
 void WalletModel::emitWalletStateChanged()
@@ -939,7 +937,7 @@ bool WalletModel::getAuthorizedWalletPrivateKey(const QString& address,
             return false;
         }
         pwd = password.toStdString();
-        if (!wallet_->verify_password(pwd)) {
+        if (!(wallet_->is_vault() ? wallet_->unlock(pwd, 60) : wallet_->verify_password(pwd))) {
             error = tr("Incorrect wallet password");
             return false;
         }
@@ -970,7 +968,7 @@ bool WalletModel::authorizeSigningPassword(const QString& password)
 
     std::string passwordBytes = password.toStdString();
     GUIUtil::ScopedStringCleanser passwordCleanser(passwordBytes);
-    if (!wallet_->verify_password(passwordBytes)) {
+    if (!(wallet_->is_vault() ? wallet_->unlock(passwordBytes, 60) : wallet_->verify_password(passwordBytes))) {
         return false;
     }
     wallet_->remember_password(passwordBytes);
@@ -1245,7 +1243,7 @@ bool WalletModel::saveWallet(const QString& password, QString* error)
             return false;
         }
         pwd = password.toStdString();
-        if (!wallet_->verify_password(pwd)) {
+        if (!(wallet_->is_vault() ? wallet_->unlock(pwd, 60) : wallet_->verify_password(pwd))) {
             if (error) *error = tr("Incorrect wallet password");
             return false;
         }

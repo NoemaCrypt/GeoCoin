@@ -141,6 +141,7 @@ _CPack_Packages/
 /.vscode/
 **/wallet.dat
 **/wallet.dat.*
+**/fee-estimates.json
 **/node.key
 **/geocoin.conf
 **/rpc*.pass

@@ -12,6 +12,11 @@ deploy contains node/seed configuration examples, a systemd unit, firewall
 setup and a sign-off template. Adjust service user and paths before installing.
 config contains the production admission manifest template.
 
+EXCHANGE.txt documents exchange RPC, deposits, withdrawals and wallet recovery.
+Use deploy/geocoin.conf.exchange.example for an archive node without a GUI.
+EXCHANGE.txt описывает биржевой RPC, депозиты, вывод и восстановление кошелька.
+Для биржи используйте deploy/geocoin.conf.exchange.example и geocoin-node без GUI.
+
 Не запускайте несколько процессов с одной папкой данных.
 Для согласованных backup/restore используйте geocoin-db по его инструкции
 --help. Завершайте ноду перед операциями, требующими эксклюзивного доступа.

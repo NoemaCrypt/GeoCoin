@@ -4,6 +4,7 @@ namespace geocoin::rpc {
 
 void RPCServer::register_wallet_methods() {
     register_wallet_basic_methods();
+    register_wallet_exchange_methods();
     register_wallet_nft_methods();
     register_wallet_sidechain_methods();
     register_wallet_multisig_methods();

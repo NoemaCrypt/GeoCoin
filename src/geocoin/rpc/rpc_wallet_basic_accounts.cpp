@@ -41,6 +41,8 @@ void RPCServer::register_wallet_basic_account_methods() {
         .name = "createwallet",
         .method = [this](const json& params) -> json {
             auto& wallet = require_wallet();
+            if (wallet.get_key_count() != 0 || std::filesystem::exists(wallet.get_file_path()))
+                throw RPCException(RPC_WALLET_ERROR, "Wallet already exists");
             std::string password = optional_param<std::string>(params, 0, "");
             utils::ScopedContainerCleanser<std::string> passwordCleanser(password);
             if (password.empty() && !allow_plaintext_wallet_for_tests()) {
@@ -64,7 +66,7 @@ void RPCServer::register_wallet_basic_account_methods() {
             }
 
             // Сохраняем кошелек
-            if (!wallet.save(password)) {
+            if (!(password.empty() ? wallet.save(password) : wallet.enable_vault(password))) {
                 throw RPCException(RPC_WALLET_ERROR, "Не удалось сохранить кошелек");
             }
 

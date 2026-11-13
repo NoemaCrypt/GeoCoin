@@ -19,6 +19,12 @@ Wallet::Wallet()
 }
 
 Wallet::~Wallet() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        vault_timer_stop_ = true;
+        vault_cv_.notify_all();
+    }
+    if (vault_timer_.joinable()) vault_timer_.join();
     try {
         clear();
     } catch (const std::exception& e) {
@@ -41,6 +47,15 @@ void Wallet::clear() {
     }
 
     keys_.clear();
+    multisig_addresses_.clear();
+    file_path_.clear();
+    ++wallet_revision_;
+    vault_mode_ = false;
+    vault_keys_dirty_ = true;
+    vault_saved_checksum_ = {};
+    wrapped_master_key_.clear();
+    encrypted_keys_.clear();
+    lock_keys_locked();
     primary_address_ = Address();
     transactions_.clear();
     tx_index_.clear();

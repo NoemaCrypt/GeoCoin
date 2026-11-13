@@ -360,7 +360,8 @@ void WalletSyncWorker::run()
                         tx,
                         change.height,
                         change.block.header.timestamp,
-                        chainState_
+                        chainState_, change.hash,
+                        static_cast<uint32_t>(&tx - change.block.transactions.data())
                     );
                 }
             }

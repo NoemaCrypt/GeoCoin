@@ -1,4 +1,5 @@
 #include "geocoin/rpc/rpc_server.hpp"
+#include "geocoin/utils/version.hpp"
 
 #include "geocoin/core/blockchain.hpp"
 #include "geocoin/rpc/rpc_security.hpp"
@@ -131,7 +132,7 @@ void RPCServer::register_misc_control_methods() {
         .method = [this](const json& params) -> json {
             (void)params;
             json result;
-            result["version"] = "0.1.0";
+            result["version"] = version::APPLICATION;
             result["protocolversion"] = 1;
 
             if (blockchain_) {
@@ -159,7 +160,7 @@ void RPCServer::register_misc_control_methods() {
             const auto cfg = node.get_config();
             const auto status = node.get_status();
             json result;
-            result["version"] = "0.1.0";
+            result["version"] = version::APPLICATION;
             result["protocolversion"] = 1;
             result["network"] = consensus::Params().network_id();
             result["running"] = status.running;

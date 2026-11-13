@@ -150,6 +150,7 @@ add_library(geocoin_network_peer STATIC
 
 add_library(geocoin_network_txpool STATIC
     src/geocoin/network/mempool.cpp
+    src/geocoin/network/fee_estimator.cpp
     src/geocoin/network/mempool_policy.cpp
 )
 
@@ -193,6 +194,7 @@ add_library(geocoin_wallet STATIC
     src/geocoin/wallet/wallet_history.cpp
     src/geocoin/wallet/wallet_nft.cpp
     src/geocoin/wallet/wallet_persist.cpp
+    src/geocoin/wallet/wallet_vault.cpp
     src/geocoin/wallet/wallet_persist_io.cpp
     src/geocoin/wallet/wallet_persist_load.cpp
     src/geocoin/wallet/wallet_sync.cpp
@@ -240,6 +242,7 @@ add_library(geocoin_rpc STATIC
     src/geocoin/rpc/rpc_wallet_tx_helpers.cpp
     src/geocoin/rpc/rpc_wallet_sidechain_helpers.cpp
     src/geocoin/rpc/rpc_wallet.cpp
+    src/geocoin/rpc/rpc_wallet_exchange.cpp
     src/geocoin/rpc/rpc_wallet_basic_accounts.cpp
     src/geocoin/rpc/rpc_wallet_basic_utxos.cpp
     src/geocoin/rpc/rpc_wallet_basic_transactions.cpp

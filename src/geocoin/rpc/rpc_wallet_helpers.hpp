@@ -201,10 +201,17 @@ Amount compute_dynamic_wallet_fee(
 );
 
 inline void require_wallet_password(
-    const wallet::Wallet& wallet,
+    wallet::Wallet& wallet,
     const std::string& password,
     const char* missing_message
 ) {
+    if (wallet.is_vault()) {
+        if (!password.empty() && !wallet.unlock(password, 60))
+            throw RPCException(RPC_WALLET_PASSPHRASE_INCORRECT, "Incorrect wallet passphrase");
+        if (wallet.is_locked())
+            throw RPCException(RPC_WALLET_UNLOCK_NEEDED, "Wallet is locked; use walletpassphrase first");
+        return;
+    }
     if (!wallet.has_password_protection()) {
         return;
     }

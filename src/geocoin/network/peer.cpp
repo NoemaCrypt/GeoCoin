@@ -1,3 +1,4 @@
+#include "geocoin/utils/version.hpp"
 #include "geocoin/network/peer.hpp"
 #include "geocoin/network/messages.hpp"
 
@@ -37,7 +38,7 @@ Peer::Peer(const std::string& address, std::unique_ptr<PeerTransport> transport)
 
     info_.address = address;
     info_.version = kSecureWireVersion;
-    info_.user_agent = "degree/0.1.0";
+    info_.user_agent = version::USER_AGENT;
 
     if (transport_->is_open()) {
         state_ = PeerState::CONNECTED;

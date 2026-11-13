@@ -165,6 +165,8 @@ void Node::create_runtime_components() {
     peer_manager_->set_archive_mode(config_.archive);
     peer_manager_->set_chain_state(chain_state_);
     mempool_ = std::make_shared<network::Mempool>(chain_state_);
+    mempool_->fee_estimator().configure_storage(config_.data_dir + "/fee-estimates.json",
+        utils::hash256_to_hex(consensus::Params().get_genesis_hash()), chain_state_->get_height(), chain_state_->get_tip_hash());
     sync_manager_ = std::make_shared<network::SyncManager>(chain_state_, blockchain_);
     chain_event_dispatcher_ = std::make_unique<ChainEventDispatcher>(
         [this](const services::ChainMutationEvent& event) {

@@ -1,4 +1,5 @@
 #include "geocoin/node/node.hpp"
+#include "geocoin/utils/version.hpp"
 #include "geocoin/node/node_key.hpp"
 #include "geocoin/benchmark/node_benchmark.hpp"
 #include "geocoin/rpc/rpc_server.hpp"
@@ -10,6 +11,7 @@
 #include "geocoin/utils/secret_file.hpp"
 #include "geocoin/utils/secure_memory.hpp"
 #include "geocoin/wallet/wallet.hpp"
+#include "geocoin/network/mempool.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -308,6 +310,12 @@ int main(int argc, char** argv) {
 
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
+
+            if (arg == "--version" || arg == "-version") {
+                std::cout << "GeoCoin " << geocoin::version::APPLICATION
+                          << " (RPC API " << geocoin::version::RPC_API << ")\n";
+                return 0;
+            }
 
             if (arg == "--help" || arg == "-h") {
                 print_usage(argv[0]);
@@ -782,6 +790,41 @@ int main(int argc, char** argv) {
         }
 
         std::cout << program_name << " started. Press Ctrl+C to stop.\n";
+        std::atomic<bool> wallet_worker_stop{false};
+        std::condition_variable wallet_worker_cv;
+        std::mutex wallet_worker_mutex;
+        const auto wallet_components = node->component_handle();
+        std::jthread wallet_worker([&](std::stop_token stop) {
+            std::stop_callback on_stop(stop, [&] {
+                wallet_worker_stop.store(true);
+                wallet->stop_scans();
+                wallet_worker_cv.notify_all();
+            });
+            auto next_rebroadcast = std::chrono::steady_clock::now();
+            std::unique_lock<std::mutex> lock(wallet_worker_mutex);
+            while (!wallet_worker_stop.load()) {
+                lock.unlock();
+                try {
+                    const auto pending = wallet_components.mempool->get_all_transactions();
+                    const auto result = wallet->synchronize(wallet_components.chain_state, pending);
+                    if (!result.complete() && !wallet_worker_stop.load())
+                        GEO_LOG_WARN("wallet", "Headless wallet scan incomplete: " << result.error);
+                    if (result.complete() && std::chrono::steady_clock::now() >= next_rebroadcast) {
+                        next_rebroadcast = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                        for (const auto& tx : wallet->get_transactions()) {
+                            if (wallet_worker_stop.load()) break;
+                            if (tx.broadcast && !tx.is_coinbase && tx.block_hash == geocoin::Hash256{} &&
+                                !wallet_components.mempool->has_transaction(tx.tx_hash))
+                                (void)wallet_components.services.mutations->admit_transaction(tx.tx);
+                        }
+                    }
+                } catch (const std::exception& error) {
+                    GEO_LOG_ERROR("wallet", "Headless wallet update failed: " << error.what());
+                }
+                lock.lock();
+                wallet_worker_cv.wait_for(lock, std::chrono::seconds(1), [&] { return wallet_worker_stop.load(); });
+            }
+        });
         auto next_status_at = std::chrono::steady_clock::now() + std::chrono::seconds(status_interval_sec);
         bool runtime_failed = false;
         while (g_running.load()) {
@@ -815,6 +858,11 @@ int main(int argc, char** argv) {
         }
 
         rpc_server.stop();
+        wallet_worker_stop.store(true);
+        wallet->stop_scans();
+        wallet_worker.request_stop();
+        wallet_worker_cv.notify_all();
+        wallet_worker.join();
         node->stop();
         std::cout << program_name << " stopped\n";
         return runtime_failed ? 1 : 0;

@@ -9,67 +9,6 @@ namespace geocoin::rpc {
 
 void RPCServer::register_wallet_multisig_legacy_methods() {
 
-    // listtransactions - Возвращает последние транзакции
-    register_method({
-        .name = "listtransactions",
-        .method = [this](const json& params) -> json {
-            auto& wallet = require_wallet();
-            auto& chain_state = require_chain_state();
-
-            std::string account = optional_param<std::string>(params, 0, "*");
-            constexpr size_t kMaxTransactionPage = 1000;
-            constexpr size_t kMaxTransactionSkip = 100000;
-            const size_t count = optional_bounded_size_param(
-                params, 1, 10, 0, kMaxTransactionPage, "count");
-            const size_t skip = optional_bounded_size_param(
-                params, 2, 0, 0, kMaxTransactionSkip, "skip");
-            if (count == 0) {
-                return json::array();
-            }
-
-            Address filter_address = (account == "*") ? Address("") : Address(account);
-
-            // Like Bitcoin: the most recent `count` entries after skipping the
-            // newest `skip`, returned oldest first.
-            auto transactions = wallet.get_recent_transactions(filter_address, count, skip);
-
-            json result = json::array();
-
-            for (const auto& wtx : transactions) {
-
-                json tx_json;
-                tx_json["account"] = "";
-                tx_json["category"] = (wtx.amount > 0) ? "receive" : "send";
-                Amount absolute_amount = 0;
-                if (wtx.amount < 0 && !checked_sub_amount(0, wtx.amount, absolute_amount)) {
-                    throw RPCException(RPC_INTERNAL_ERROR, "Некорректная сумма в истории кошелька");
-                }
-                if (wtx.amount >= 0) {
-                    absolute_amount = wtx.amount;
-                }
-                tx_json["amount"] = static_cast<double>(absolute_amount) / COIN;
-                tx_json["amount_angles"] = absolute_amount;
-                const Height current_height = chain_state.get_height();
-                tx_json["confirmations"] =
-                    (wtx.block_height != 0 && wtx.block_height <= current_height)
-                        ? (current_height - wtx.block_height + 1)
-                        : 0;
-                tx_json["time"] = wtx.timestamp;
-
-                tx_json["txid"] = hash256_to_hex_string(wtx.tx_hash);
-
-                result.push_back(tx_json);
-            }
-
-            return result;
-        },
-        .category = "wallet",
-        .help = "listtransactions ( \"account\" count skip )\n\nВозвращает bounded страницу истории кошелька (count default 10, max 1000; skip max 100000): последние count записей после пропуска skip самых новых, от старых к новым. count=0 возвращает пустой массив.\n\nАргументы:\n1. \"account\"    (string, optional) Имя аккаунта. Используйте \"*\" для всех аккаунтов.\n2. count         (numeric, optional, default=10, max=1000) Количество транзакций для возврата\n3. skip          (numeric, optional, default=0, max=100000) Количество транзакций для пропуска\n\nРезультат:\n[                   (array of json object)\n  {\n    \"account\":\"accountname\",  (string) Имя аккаунта\n    \"address\":\"address\",      (string) Адрес geocoin\n    \"category\":\"send|receive\", (string) Категория транзакции\n    \"amount\": x.xxx,          (numeric) Сумма в GC\n    ...\n  }\n  ,...\n]\n",
-        .requires_wallet = true,
-        .param_names = {"account", "count", "skip"},
-        .deprecation = "Legacy account-style wallet history endpoint; prefer address/transaction-specific APIs for new clients."
-    });
-
     // getaddressesbyaccount - Возвращает список адресов для указанного аккаунта
     register_method({
         .name = "getaddressesbyaccount",

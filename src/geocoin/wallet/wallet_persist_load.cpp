@@ -15,6 +15,14 @@ bool Wallet::load_from_file(const std::string& filename, const std::string& pass
     std::lock_guard<std::recursive_mutex> scan_lock(scan_mutex_);
     std::lock_guard<std::mutex> lock(mutex_);
 
+    uint64_t probe_size = 0;
+    ScopedReadFd probe(open_secure_input_file(filename, probe_size));
+    std::array<byte, 4> prefix{};
+    if (probe.get() >= 0 && read_all_from_fd(probe.get(), prefix.data(), prefix.size()) &&
+        prefix == std::array<byte, 4>{'G', 'E', 'O', 'V'}) {
+        return load_vault_locked(filename, password);
+    }
+
     auto try_load = [&](const std::string& path) -> bool {
         if (SyncDebugEnabled()) {
             GEO_LOG_DEBUG("wallet", "load_from_file START: filename=" << path);
@@ -353,6 +361,50 @@ bool Wallet::load_from_file(const std::string& filename, const std::string& pass
         offset += primary_length;
         if (loaded.keys.empty() ? !loaded.primary_address.empty() : !loaded.keys.contains(loaded.primary_address)) return false;
         if (offset != buffer.size()) {
+            uint32_t marker = 0, count = 0;
+            if (!read_u32(marker) || marker != 0x31584557 || !read_u32(count) ||
+                count != loaded.transactions.size()) return false;
+            for (auto& tx : loaded.transactions) {
+                if (!require(32)) return false;
+                std::copy_n(buffer.begin() + offset, 32, tx.block_hash.begin());
+                offset += 32;
+                uint32_t removed = 0;
+                if (!read_u32(tx.block_index) || !read_u64(tx.block_time) || !read_u32(removed) ||
+                    removed > (buffer.size() - offset) / 52) return false;
+                for (uint32_t i = 0; i < removed; ++i) {
+                    WalletBlockLocation location;
+                    if (!require(32)) return false;
+                    std::copy_n(buffer.begin() + offset, 32, location.hash.begin());
+                    offset += 32;
+                    if (!read_u64(location.height) || !read_u32(location.index) || !read_u64(location.time) ||
+                        location.hash == Hash256{}) return false;
+                    tx.removed_blocks.push_back(location);
+                }
+                uint32_t changes = 0;
+                if (!read_u32(changes) || changes > tx.tx.outputs.size()) return false;
+                for (uint32_t i = 0; i < changes; ++i) {
+                    uint32_t index = 0;
+                    if (!read_u32(index) || index >= tx.tx.outputs.size() ||
+                        std::find(tx.change_outputs.begin(), tx.change_outputs.end(), index) != tx.change_outputs.end()) return false;
+                    tx.change_outputs.push_back(index);
+                }
+                if (!require(1) || buffer[offset] > 1) return false;
+                tx.broadcast = buffer[offset++] == 1;
+                if (!read_u64(tx.received_at)) return false;
+                uint32_t conflicts = 0;
+                if (!read_u32(conflicts) || conflicts > (buffer.size() - offset) / 84) return false;
+                for (uint32_t i = 0; i < conflicts; ++i) {
+                    Hash256 other{};
+                    WalletBlockLocation location;
+                    if (!require(64)) return false;
+                    std::copy_n(buffer.begin() + offset, 32, other.begin()); offset += 32;
+                    std::copy_n(buffer.begin() + offset, 32, location.hash.begin()); offset += 32;
+                    if (!read_u64(location.height) || !read_u32(location.index) || !read_u64(location.time)) return false;
+                    tx.note_conflict(other, location);
+                }
+            }
+        }
+        if (offset != buffer.size()) {
             GEO_LOG_ERROR("wallet", "Wallet payload size mismatch: unread bytes remain");
             return false;
         }
@@ -362,6 +414,12 @@ bool Wallet::load_from_file(const std::string& filename, const std::string& pass
         password_salt_.swap(loaded.password_salt);
         password_kdf_iterations_ = loaded.password_kdf_iterations;
         keys_.swap(loaded.keys);
+        ++wallet_revision_;
+        vault_mode_ = false;
+        wrapped_master_key_.clear();
+        encrypted_keys_.clear();
+        vault_master_key_.clear();
+        unlock_until_ = 0;
         transactions_.swap(loaded.transactions);
         tx_index_.swap(loaded.tx_index);
         multisig_addresses_.swap(loaded.multisig_addresses);

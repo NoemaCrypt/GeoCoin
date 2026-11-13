@@ -8,7 +8,7 @@
 ## Runtime Contracts
 - `activation-manifest.json` is required in the network-scoped datadir (for production: `/var/lib/geocoin/degree`). If it is missing, GeoCoin creates a versioned production manifest with risky features disabled for local transaction admission and construction. This operator-controlled file never changes block validity.
 - `geocoin-core --smoke-test -no-auto-connect` is the canonical GUI smoke contract.
-- `geocoin-core --gui-e2e-test --data-dir <temp> -addnode=node1.geocoin.network:3030 -addnode=node2.geocoin.network:3030 -addnode=node3.geocoin.network:3030` is the Windows GUI full-node e2e contract.
+- `geocoin-core --gui-e2e-test --data-dir <temp> -addnode=45.12.114.4:3030` is the Windows GUI full-node e2e contract.
 - Wallet/admin RPC stays on loopback or behind a private reverse proxy.
 - P2P wire protocol v2 is mandatory: ML-KEM-768 + X25519 establishes the
   channel and ChaCha20-Poly1305 protects every frame after `SECURE_REPLY`.
