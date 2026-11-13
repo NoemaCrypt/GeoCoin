@@ -6,6 +6,7 @@
 #include <openssl/crypto.h>
 
 extern "C" {
+#include <oqs/common.h>
 #include "sig/falcon/pqclean_falcon-512_clean/api.h"
 #include "sig/falcon/pqclean_falcon-512_clean/inner.h"
 
@@ -24,8 +25,10 @@ namespace {
 constexpr unsigned kLogN = 9; // Falcon-512
 
 bool falcon_use_avx2() {
-#if defined(GEOCOIN_FALCON512_AVX2) && (defined(__GNUC__) || defined(__clang__))
-    static const bool enabled = __builtin_cpu_supports("avx2");
+#if defined(GEOCOIN_FALCON512_AVX2)
+    // liboqs checks CPU support and OS XMM/YMM state on every supported
+    // toolchain, including ClangCL without a GNU __cpu_model runtime.
+    static const bool enabled = OQS_CPU_has_extension(OQS_CPU_EXT_AVX2) != 0;
     return enabled;
 #else
     return false;
