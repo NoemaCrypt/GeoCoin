@@ -44,6 +44,7 @@ set(QT_SOURCES
     geocoincore.cpp
     geocoinapplication.cpp
     geocoingui.cpp
+    geocoingui_layouttest.cpp
     forktreedialog.cpp
     clientmodel.cpp
     walletmodel.cpp

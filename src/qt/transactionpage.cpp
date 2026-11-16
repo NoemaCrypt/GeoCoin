@@ -167,6 +167,7 @@ void TransactionPage::setupUi()
 
     // Transaction table
     transactionView = new QTableView(this);
+    transactionView->setMinimumHeight(150);
     transactionView->setAlternatingRowColors(true);
     transactionView->setSelectionBehavior(QAbstractItemView::SelectRows);
     transactionView->setSelectionMode(QAbstractItemView::SingleSelection);

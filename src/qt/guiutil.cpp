@@ -25,6 +25,9 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QSaveFile>
+#include <QScrollArea>
+#include <QStackedWidget>
+#include <QStandardPaths>
 #include <QThread>
 #include <QColor>
 #include <QToolTip>
@@ -46,6 +49,79 @@
 #endif
 
 namespace GUIUtil {
+
+QString applicationDataPath()
+{
+    const QString testPath = qApp ? qApp->property("geocoinTestDataDirectory").toString() : QString();
+    return testPath.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) : testPath;
+}
+
+namespace {
+class ContentStack final : public QStackedWidget
+{
+public:
+    explicit ContentStack(QWidget* parent) : QStackedWidget(parent)
+    {
+        layout()->setSizeConstraint(QLayout::SetNoConstraint);
+        connect(this, &QStackedWidget::currentChanged, this, [this] { updateGeometry(); });
+    }
+
+    QSize sizeHint() const override
+    {
+        return contentSize(false);
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return contentSize(true);
+    }
+
+    bool hasHeightForWidth() const override
+    {
+        return currentWidget() && currentWidget()->hasHeightForWidth();
+    }
+
+    int heightForWidth(int width) const override
+    {
+        if (!hasHeightForWidth()) return sizeHint().height();
+        const QMargins margins = contentsMargins();
+        return currentWidget()->heightForWidth(qMax(0, width - margins.left() - margins.right()))
+            + margins.top() + margins.bottom();
+    }
+
+private:
+    QSize contentSize(bool minimum) const
+    {
+        if (!currentWidget()) return QSize(0, 0);
+        const QMargins margins = contentsMargins();
+        const QSize hint = minimum ? currentWidget()->minimumSizeHint() : currentWidget()->sizeHint();
+        return hint.expandedTo(currentWidget()->minimumSize())
+            + QSize(margins.left() + margins.right(), margins.top() + margins.bottom());
+    }
+};
+}
+
+QScrollArea* createPageScrollArea(QWidget* content, QWidget* parent)
+{
+    auto* scroll = new QScrollArea(parent);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
+    scroll->viewport()->setAutoFillBackground(false);
+    if (content->layout()) {
+        content->layout()->setSizeConstraint(QLayout::SetMinAndMaxSize);
+    }
+    scroll->setWidget(content);
+    content->setAutoFillBackground(false);
+    return scroll;
+}
+
+QStackedWidget* createContentStack(QWidget* parent)
+{
+    return new ContentStack(parent);
+}
 
 void cleanseQString(QString& value)
 {

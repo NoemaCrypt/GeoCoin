@@ -200,8 +200,8 @@ void NFTPage::setupUi() {
     addrLayout->addWidget(new QLabel(tr("Address:"), this));
     labelWalletAddress = new QLabel(tr("No wallet loaded"), this);
     labelWalletAddress->setFont(GUIUtil::geocoinAddressFont());
-    addrLayout->addWidget(labelWalletAddress);
-    addrLayout->addStretch();
+    labelWalletAddress->setWordWrap(true);
+    addrLayout->addWidget(labelWalletAddress, 1);
     walletLayout->addLayout(addrLayout);
 
     buttonRefresh = new QPushButton(tr("Refresh"), this);
@@ -209,7 +209,7 @@ void NFTPage::setupUi() {
     connect(buttonRefresh, &QPushButton::clicked, this, &NFTPage::refresh);
     walletLayout->addWidget(buttonRefresh);
 
-    QHBoxLayout *actionsLayout = new QHBoxLayout();
+    QVBoxLayout *actionsLayout = new QVBoxLayout();
     buttonCreate = new QPushButton(tr("Create NFT / Cadastr"), this);
     buttonTransfer = new QPushButton(tr("Transfer"), this);
     buttonBurn = new QPushButton(tr("Burn"), this);
@@ -220,9 +220,10 @@ void NFTPage::setupUi() {
     connect(buttonTransfer, &QPushButton::clicked, this, &NFTPage::transferNftClicked);
     connect(buttonBurn, &QPushButton::clicked, this, &NFTPage::burnNftClicked);
     actionsLayout->addWidget(buttonCreate);
-    actionsLayout->addWidget(buttonTransfer);
-    actionsLayout->addWidget(buttonBurn);
-    actionsLayout->addStretch();
+    QHBoxLayout* transferActions = new QHBoxLayout();
+    transferActions->addWidget(buttonTransfer);
+    transferActions->addWidget(buttonBurn);
+    actionsLayout->addLayout(transferActions);
     walletLayout->addLayout(actionsLayout);
 
     layout->addWidget(walletGroup);
@@ -231,6 +232,7 @@ void NFTPage::setupUi() {
     QVBoxLayout *listLayout = new QVBoxLayout(listGroup);
 
     tableNfts = new QTableWidget(this);
+    tableNfts->setMinimumHeight(150);
     tableNfts->setColumnCount(2);
     tableNfts->setHorizontalHeaderLabels({tr("NFT ID"), tr("Name")});
     tableNfts->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -247,6 +249,9 @@ void NFTPage::setupUi() {
     QVBoxLayout *detailsLayout = new QVBoxLayout(detailsGroup);
 
     auto addRow = [&](const QString& label, QWidget* valueWidget) {
+        if (QLabel* valueLabel = qobject_cast<QLabel*>(valueWidget)) {
+            valueLabel->setWordWrap(true);
+        }
         QHBoxLayout *row = new QHBoxLayout();
         row->addWidget(new QLabel(label, this));
         row->addWidget(valueWidget, 1);

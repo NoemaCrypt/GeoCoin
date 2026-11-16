@@ -9,6 +9,8 @@
 #include "geocoin/wallet/wallet.hpp"
 
 #include <QDebug>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QPalette>
 #include <QColor>
 #include <QMessageBox>
@@ -237,7 +239,8 @@ protected:
 static bool argvHasSmokeTest(int argc, char *argv[])
 {
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--smoke-test") {
+        if (std::string(argv[i]) == "--smoke-test" ||
+            std::string(argv[i]) == "--ui-layout-test") {
             return true;
         }
     }
@@ -359,6 +362,17 @@ int main(int argc, char *argv[])
     const bool earlySmokeTest = argvHasSmokeTest(argc, argv);
     writeEarlySmokeTrace(earlySmokeTest, "before QApplication");
 
+    QTemporaryDir testSettingsDir;
+    if (earlySmokeTest) {
+        if (!testSettingsDir.isValid()) {
+            return 1;
+        }
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, testSettingsDir.path());
+        QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, testSettingsDir.path());
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
 #ifndef _WIN32
     // Linux fallback keeps bundled dialogs independent from the host OS theme.
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
@@ -414,6 +428,11 @@ int main(int argc, char *argv[])
             smokeTest = true;
             app.setNoAutoConnect(true);
         }
+        else if (arg == "--ui-layout-test") {
+            smokeTest = true;
+            app.setNoAutoConnect(true);
+            app.setProperty("geocoinUiLayoutTest", true);
+        }
         else if (arg == "--gui-e2e-test") {
             guiE2eTest = true;
         }
@@ -457,7 +476,7 @@ int main(int argc, char *argv[])
     QTemporaryDir smokeTempDir;
     QString dataDir;
     if (smokeTest || guiE2eTest) {
-        if (!explicitDataDir.isEmpty()) {
+        if (!explicitDataDir.isEmpty() && !app.property("geocoinUiLayoutTest").toBool()) {
             dataDir = explicitDataDir;
             QDir().mkpath(dataDir);
         } else {
@@ -508,6 +527,9 @@ int main(int argc, char *argv[])
     GUIUtil::cleanseQString(startupWalletPassword);
 
     app.setDataDirectory(dataDir);
+    if (smokeTest) {
+        app.setProperty("geocoinTestDataDirectory", dataDir);
+    }
 
     // Create network style
     std::unique_ptr<NetworkStyle> networkStyle(new NetworkStyle("GeoCoin", 0, 0, ""));
@@ -519,7 +541,7 @@ int main(int argc, char *argv[])
         writeSmokeTrace(smokeTest, QStringLiteral("after createWindow"));
 
         if (smokeTest) {
-            QTimer::singleShot(20000, &app, [&app]() {
+            QTimer::singleShot(app.property("geocoinUiLayoutTest").toBool() ? 180000 : 20000, &app, [&app]() {
                 if (app.isSmokeTestMode()) {
                     app.exit(3);
                 }

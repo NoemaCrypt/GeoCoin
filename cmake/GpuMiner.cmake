@@ -106,10 +106,19 @@ if(NOT _geocoin_enable_cuda STREQUAL "OFF")
             if(NOT GEOCOIN_CUDA_MAXRREGCOUNT STREQUAL "")
                 list(APPEND _geocoin_cuda_perf_flags "--maxrregcount=${GEOCOIN_CUDA_MAXRREGCOUNT}")
             endif()
+            set(_geocoin_cuda_host_includes "$ENV{INCLUDE}")
+            if(WIN32 AND CMAKE_GENERATOR MATCHES "^Visual Studio")
+                # ClangCL's IncludePath starts with LLVM headers that nvcc's cl.exe host cannot parse.
+                set(_geocoin_cuda_host_includes "$(VC_IncludePath);$(WindowsSDK_IncludePath)")
+            elseif(WIN32)
+                list(FILTER _geocoin_cuda_host_includes EXCLUDE
+                    REGEX "[/\\\\][Cc][Ll][Aa][Nn][Gg][/\\\\][0-9][^/\\\\]*[/\\\\]include([/\\\\]|$)")
+            endif()
             add_custom_command(
                 OUTPUT "${_geocoin_cuda_object}"
                 COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}"
-                COMMAND "${GEOCOIN_CUDA_NVCC_EXECUTABLE}"
+                COMMAND ${CMAKE_COMMAND} -E env "INCLUDE=${_geocoin_cuda_host_includes}" "CL="
+                        "${GEOCOIN_CUDA_NVCC_EXECUTABLE}"
                         -std=c++20
                         ${_geocoin_cuda_perf_flags}
                         -DGEOCOIN_GPU_ENABLE_CUDA=1

@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -93,7 +94,7 @@ def entries(source):
         return result
     if zipfile.is_zipfile(source):
         with zipfile.ZipFile(source) as archive:
-            rows = [(item.filename, item.external_attr >> 16) for item in archive.infolist() if not item.is_dir()]
+            rows = [(item.orig_filename, item.external_attr >> 16) for item in archive.infolist() if not item.is_dir()]
     else:
         with tarfile.open(source) as archive:
             members = archive.getmembers()
@@ -146,6 +147,8 @@ def check(source, profile, platform, root=ROOT):
     missing = required - files.keys()
     if missing:
         raise ValueError("Required bundle files missing: " + ", ".join(sorted(missing)))
+    # Windows directory modes cannot represent POSIX execute bits; archive metadata can.
+    validate_posix_modes = platform == "linux" and (os.name != "nt" or not source.is_dir())
     for name, mode in files.items():
         relative_path(name)
         runtime = bool(re.fullmatch(r"lib/lib[^/]+\.so(?:\.[0-9]+)*", name)) if platform == "linux" else bool(re.fullmatch(r"bin/[^/]+\.dll", name, re.I))
@@ -159,7 +162,7 @@ def check(source, profile, platform, root=ROOT):
         notice = bool(re.fullmatch(r"licenses/dependencies/[A-Za-z0-9_.+\-]+\.txt", name))
         if name not in allowed and not runtime and not plugins and not notice:
             raise ValueError(f"Unexpected file in {profile} bundle: {name}")
-        if platform == "linux" and (name in spec["required_binaries"] or name.startswith("bin/geocoin-")) and not mode & 0o111:
+        if validate_posix_modes and (name in spec["required_binaries"] or name.startswith("bin/geocoin-")) and not mode & 0o111:
             raise ValueError(f"Release binary or launcher is not executable: {name}")
     if platform == "linux" and profile == "user" and not any(n.startswith("plugins/platforms/") for n in files):
         raise ValueError("Wallet bundle is missing Qt platform plugins")

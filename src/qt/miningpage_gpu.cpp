@@ -137,6 +137,7 @@ void MiningPage::setGpuBackendAvailability(bool hasCuda, bool hasHip, bool hasOp
     checkGpuCuda->setEnabled(!gpuMiningEnabled && hasCuda);
     checkGpuHip->setEnabled(!gpuMiningEnabled && hasHip);
     checkGpuOpenCl->setEnabled(!gpuMiningEnabled && hasOpenCl);
+    updateGpuBackendMinimumSizes();
     updateGpuDeviceItemsForBackend(true);
 }
 
@@ -297,6 +298,7 @@ void MiningPage::setGpuMiningUi(bool running)
             ? "QPushButton { background-color: " + GUIUtil::Theme::ColorRed + "; color: white; font-weight: bold; border-radius: 8px; min-height: 36px; }"
             : "QPushButton { background-color: " + GUIUtil::Theme::ColorGreen + "; color: white; font-weight: bold; border-radius: 8px; min-height: 36px; }"
     );
+    updateGpuBackendMinimumSizes();
     updateOverallMiningDisplay();
 }
 

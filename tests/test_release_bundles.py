@@ -3,8 +3,9 @@
 
 import importlib.util
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -59,6 +60,20 @@ class ReleaseBundles(unittest.TestCase):
                 plugin.parent.mkdir(parents=True)
                 plugin.write_text("Qt fixture")
         return output
+
+    def linux_archive(self, output, archive, non_executable=None):
+        def fixture_modes(item):
+            relative = PurePosixPath(item.name).relative_to("GeoCoin")
+            name = relative.as_posix()
+            if item.isfile():
+                if name.startswith("bin/geocoin-") or (len(relative.parts) == 1 and name.startswith("geocoin-")):
+                    item.mode = 0o755
+                if name == non_executable:
+                    item.mode = 0o644
+            return item
+
+        with tarfile.open(archive, "w:gz") as target:
+            target.add(output, arcname="GeoCoin", filter=fixture_modes)
 
     def test_all_profiles_and_platforms(self):
         for platform in ["linux", "windows"]:
@@ -133,16 +148,27 @@ class ReleaseBundles(unittest.TestCase):
     def test_linux_requires_executable_launchers(self):
         output = self.staged("admin", "linux")
         (output / "geocoin-node").chmod(0o644)
-        with self.assertRaisesRegex(ValueError, "not executable"):
-            bundle.check(output, "admin", "linux")
+        if os.name == "nt":
+            self.assertGreater(bundle.check(output, "admin", "linux"), 0)
+        else:
+            with self.assertRaisesRegex(ValueError, "not executable"):
+                bundle.check(output, "admin", "linux")
+
+    def test_linux_archive_requires_executable_entries(self):
+        output = self.staged("admin", "linux")
+        for name in ["geocoin-node", "bin/geocoin-node"]:
+            with self.subTest(name=name):
+                archive = self.base / "non-executable.tar.gz"
+                self.linux_archive(output, archive, non_executable=name)
+                with self.assertRaisesRegex(ValueError, "not executable"):
+                    bundle.check(archive, "admin", "linux")
 
     def test_checks_actual_archive_payload(self):
         for platform in ["linux", "windows"]:
             output = self.staged("user", platform)
             archive = self.base / (platform + (".tar.gz" if platform == "linux" else ".zip"))
             if platform == "linux":
-                with tarfile.open(archive, "w:gz") as target:
-                    target.add(output, arcname="GeoCoin")
+                self.linux_archive(output, archive)
             else:
                 with zipfile.ZipFile(archive, "w") as target:
                     for path in output.rglob("*"):
@@ -153,8 +179,16 @@ class ReleaseBundles(unittest.TestCase):
     def test_rejects_archive_path_escape(self):
         for name in ["../wallet.dat", "/wallet.dat", "C:/wallet.dat", "bin\\wallet.dat"]:
             archive = self.base / "bad.zip"
+            entry = zipfile.ZipInfo(name)
+            # Preserve the malformed name instead of ZipInfo's Windows normalization.
+            entry.filename = name
             with zipfile.ZipFile(archive, "w") as target:
-                target.writestr(name, "bad")
+                target.writestr(entry, "bad")
+            with zipfile.ZipFile(archive) as source:
+                self.assertEqual(source.infolist()[0].orig_filename, name)
+            with archive.open("rb") as source:
+                header = struct.unpack(zipfile.structFileHeader, source.read(zipfile.sizeFileHeader))
+                self.assertEqual(source.read(header[zipfile._FH_FILENAME_LENGTH]).decode("utf-8"), name)
             with self.assertRaises(ValueError):
                 bundle.entries(archive)
 
@@ -193,7 +227,8 @@ class ReleaseBundles(unittest.TestCase):
                 (directory / name).write_text("runtime fixture")
         for profile, dynamic in [(p, d) for p in ["user", "admin", "sdk"] for d in [False, True]]:
             output = self.base / ("windows-packed-" + profile + ("-dynamic" if dynamic else ""))
-            result = subprocess.run([powershell, "-NoProfile", "-File", str(ROOT / "scripts/package_portable_windows.ps1"),
+            result = subprocess.run([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                     "-File", str(ROOT / "scripts/package_portable_windows.ps1"),
                                      "-RootPath", str(ROOT), "-GeoBuildDir", str(self.build),
                                      "-LibGeoBuildDir", str(self.sdk), "-OutputDir", str(output),
                                      "-BundleProfile", profile] + (["-Dynamic"] if dynamic else []),

@@ -32,15 +32,17 @@ class FileLock:
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = open(self.path, "a+", encoding="utf-8")
-        if fcntl is not None:
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
-        elif msvcrt is not None:
-            self.handle.seek(0)
-            if self.handle.read(1) == "":
-                self.handle.write("0")
-                self.handle.flush()
-            self.handle.seek(0)
-            msvcrt.locking(self.handle.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            if fcntl is not None:
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                # Windows locks may extend past EOF; reading a locked byte first fails.
+                self.handle.seek(0)
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_LOCK, 1)
+        except BaseException:
+            self.handle.close()
+            self.handle = None
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb):

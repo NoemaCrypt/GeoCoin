@@ -46,12 +46,15 @@ public:
 
     /** Run offscreen/headless GUI smoke checks without starting node/wallet init. */
     bool runSmokeChecks(QString *error = nullptr);
+    bool runLayoutChecks(QString *error = nullptr);
 
     /** Join an in-flight CPU mining stop before core/node destruction. */
     void waitForPendingMiningStop();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void persistLastPage(const QString& pageId);
@@ -70,15 +73,19 @@ private:
     double statusCpuHashrate = 0.0;
     bool statusGpuMiningEnabled = false;
     double statusGpuHashrate = 0.0;
+    int statusConnectionsCount_ = 0;
+    int statusBlocksCount_ = 0;
+    bool statusSyncActive_ = false;
+    QString statusMiningText_;
 
     // Status bar
-    QLabel *labelConnectionsIcon;
-    QLabel *labelConnectionsText;
-    QLabel *labelBlocksIcon;
-    QLabel *labelBlocksText;
-    QProgressBar *progressBar;
-    QLabel *progressBarLabel;
-    QLabel *labelHashrateStatus;
+    QLabel *labelConnectionsIcon = nullptr;
+    QLabel *labelConnectionsText = nullptr;
+    QLabel *labelBlocksIcon = nullptr;
+    QLabel *labelBlocksText = nullptr;
+    QProgressBar *progressBar = nullptr;
+    QLabel *progressBarLabel = nullptr;
+    QLabel *labelHashrateStatus = nullptr;
 
     // Menu bar
     QMenu *fileMenu;
@@ -114,8 +121,11 @@ private:
     void createActions();
     void createMenuBar();
     void createToolBars();
+    void updateNavigationWidths();
     void createStatusBar();
     void refreshMiningStatusBar();
+    void updateStatusBarLayout();
+    void updateMiningStatusText();
     void applyCurrentTheme();
     void retranslateUi();
     void showStyledMessageBox(int icon, const QString &title, const QString &text);

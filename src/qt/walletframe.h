@@ -6,8 +6,10 @@
 #define GEOCOIN_QT_WALLETFRAME_H
 
 #include <QFrame>
+#include <QHash>
 #include <QStackedWidget>
 
+class QScrollArea;
 class ClientModel;
 class WalletModel;
 class OverviewPage;
@@ -53,11 +55,15 @@ public slots:
 
 private:
     void buildPages();
+    void addPage(QWidget* page, const QString& id);
+    QScrollArea* scrollAreaForPage(QWidget* page) const;
+    void setCurrentPage(QWidget* page);
 
     ClientModel *clientModel;
     WalletModel *walletModel;
 
     QStackedWidget *walletStack;
+    QHash<QWidget*, QScrollArea*> pageScrollAreas;
 
     // Pages
     OverviewPage *overviewPage;

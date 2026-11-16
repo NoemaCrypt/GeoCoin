@@ -15,12 +15,21 @@
 
 QT_BEGIN_NAMESPACE
 class QApplication;
+class QScrollArea;
+class QStackedWidget;
 class QWidget;
 QT_END_NAMESPACE
 
 /** Utility functions used by the GeoCoin Qt UI */
 namespace GUIUtil
 {
+    /** Keep page minimum sizes inside a transparent, resizable viewport. */
+    QScrollArea* createPageScrollArea(QWidget* content, QWidget* parent = nullptr);
+    /** Size a role selector's stack from its active page, not its hidden pages. */
+    QStackedWidget* createContentStack(QWidget* parent = nullptr);
+    /** Keep diagnostic page state inside its temporary data directory. */
+    QString applicationDataPath();
+
     /** Best-effort overwrite of a QString that held a secret. */
     void cleanseQString(QString& value);
 

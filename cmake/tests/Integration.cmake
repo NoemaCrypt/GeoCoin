@@ -14,6 +14,24 @@ if(BUILD_QT_GUI)
         )
     endif()
     set_tests_properties(test_geocoin_qt_smoke PROPERTIES TIMEOUT 60)
+    foreach(_scale 1 1.25 1.5 2)
+        string(REPLACE "." "_" _scale_name "${_scale}")
+        set(_layout_command ${CMAKE_COMMAND} -E env
+            "QT_SCALE_FACTOR=${_scale}"
+            "GEOCOIN_UI_TEST_OUTPUT=${CMAKE_BINARY_DIR}/ui-layout/${_scale_name}")
+        if(UNIX AND XVFB_RUN_EXECUTABLE)
+            list(APPEND _layout_command ${XVFB_RUN_EXECUTABLE} -a -s "-screen 0 3200x2200x24"
+                $<TARGET_FILE:geocoin-qt> -platform xcb)
+        elseif(WIN32)
+            list(APPEND _layout_command $<TARGET_FILE:geocoin-qt> -platform windows)
+        else()
+            list(APPEND _layout_command $<TARGET_FILE:geocoin-qt> -platform offscreen)
+        endif()
+        add_test(NAME test_geocoin_qt_layout_${_scale_name}
+            COMMAND ${_layout_command} --ui-layout-test -no-auto-connect)
+        set_tests_properties(test_geocoin_qt_layout_${_scale_name} PROPERTIES
+            LABELS "gui;layout" TIMEOUT 240)
+    endforeach()
 endif()
 
 find_package(Python3 3.9 COMPONENTS Interpreter REQUIRED)

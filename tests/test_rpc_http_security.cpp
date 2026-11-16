@@ -24,6 +24,16 @@ using geocoin::test::send_raw_rpc;
 using geocoin::test::send_rpc_method;
 using geocoin::test::TcpStream;
 
+geocoin::test::RpcHttpResponse send_policy_probe(
+    uint16_t port, const std::string& request, const char* context)
+{
+    try {
+        return send_raw_http(port, request);
+    } catch (const std::runtime_error& error) {
+        throw std::runtime_error(std::string(context) + ": " + error.what());
+    }
+}
+
 class ScopedEnvVar {
 public:
     ScopedEnvVar(const char* name, const char* value)
@@ -296,15 +306,17 @@ void test_http_parser_policy(uint16_t port) {
     unauthenticated_slow_body_req << "Content-Type: application/json\r\n";
     unauthenticated_slow_body_req << "Content-Length: " << (1024 * 1024) << "\r\n";
     unauthenticated_slow_body_req << "Connection: close\r\n\r\n";
-    expect_true(send_raw_http(port, unauthenticated_slow_body_req.str()).status == 401,
+    expect_true(send_policy_probe(port, unauthenticated_slow_body_req.str(),
+                                 "pre-body authentication probe").status == 401,
                 "invalid Basic Auth must be rejected from headers before body read");
 
-    std::ostringstream huge_header_req;
-    huge_header_req << "POST / HTTP/1.1\r\n";
-    huge_header_req << "X-Fill: " << std::string(64 * 1024, 'x') << "\r\n";
-    huge_header_req << "Content-Length: 0\r\n";
-    huge_header_req << "Connection: close\r\n\r\n";
-    const auto huge_header_response = send_raw_http(port, huge_header_req.str());
+    // An unterminated header at the cap cannot fit its terminator. Do not send
+    // a tail beyond the cap: closing with unread bytes can reset TCP on Windows
+    // and discard the 413 before the client receives it.
+    std::string huge_header_req = "POST / HTTP/1.1\r\nX-Fill: ";
+    huge_header_req.resize(64 * 1024, 'x');
+    const auto huge_header_response = send_policy_probe(
+        port, huge_header_req, "oversized header probe");
     expect_true(huge_header_response.status == 413,
                 "oversized HTTP headers must be rejected at the documented limit");
 

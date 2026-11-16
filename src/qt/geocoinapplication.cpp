@@ -435,7 +435,9 @@ void GeoCoinApplication::runGuiSmokeTest()
         returnValue = 1;
         qCritical() << "GeoCoin GUI smoke test failed: main window was not created";
         writeSmokeTrace(QStringLiteral("runGuiSmokeTest failed: no window"));
-    } else if (!window->runSmokeChecks(&error)) {
+    } else if (!(property("geocoinUiLayoutTest").toBool()
+                     ? window->runLayoutChecks(&error)
+                     : window->runSmokeChecks(&error))) {
         returnValue = 1;
         qCritical() << "GeoCoin GUI smoke test failed:" << error;
         writeSmokeTrace(QStringLiteral("runGuiSmokeTest failed: %1").arg(error));

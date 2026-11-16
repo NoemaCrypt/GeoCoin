@@ -5,7 +5,7 @@ CorporatePage::CorporatePage(QWidget *parent)
       clientModel_(nullptr),
       walletModel_(nullptr),
       roleButtons_(new QButtonGroup(this)),
-      roleStack_(new QStackedWidget(this)),
+      roleStack_(GUIUtil::createContentStack(this)),
       statusLabel_(nullptr),
       activityLog_(nullptr),
       primaryConfigLoaded_(false),
@@ -84,7 +84,7 @@ void CorporatePage::setWalletModel(WalletModel *model)
     if (walletModel_) {
         QString walletDataDir = walletModel_->getDataDirectory();
         if (walletDataDir.isEmpty()) {
-            walletDataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+            walletDataDir = GUIUtil::applicationDataPath();
         }
         if (walletDataDir.isEmpty()) walletDataDir = QDir::homePath() + QStringLiteral("/.geocoin");
         walletDataDir = QDir(walletDataDir).absolutePath();
@@ -191,11 +191,13 @@ bool CorporatePage::saveWalletChanges()
 
 void CorporatePage::setupUi()
 {
+    roleButtons_->setObjectName(QStringLiteral("roleSelector"));
     QVBoxLayout *rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(20, 20, 20, 20);
     rootLayout->setSpacing(15);
 
     statusLabel_ = new QLabel(tr("Ready"), this);
+    statusLabel_->setWordWrap(true);
     statusLabel_->setStyleSheet("QLabel { font-weight: 600; color: #27ae60; padding: 8px; }");
     rootLayout->addWidget(statusLabel_);
 
@@ -209,12 +211,14 @@ void CorporatePage::setupUi()
     roleStack_->addWidget(directorPage);
     roleStack_->addWidget(signerPage);
     roleStack_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    for (QLabel* label : roleStack_->findChildren<QLabel*>()) {
+        label->setWordWrap(true);
+    }
+    for (QFormLayout* form : roleStack_->findChildren<QFormLayout*>()) {
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    }
 
-    QScrollArea *scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidget(roleStack_);
-    rootLayout->addWidget(scroll, 1);
+    rootLayout->addWidget(roleStack_, 1);
 
     QGroupBox *logBox = new QGroupBox(tr("Activity log"), this);
     QVBoxLayout *logLayout = new QVBoxLayout(logBox);
@@ -232,7 +236,7 @@ void CorporatePage::setupUi()
     roleButtons_->button(0)->setChecked(true);
     roleStack_->setCurrentIndex(0);
 
-    QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QString dataDir = GUIUtil::applicationDataPath();
     if (dataDir.isEmpty()) {
         dataDir = QDir::homePath() + "/.geocoin";
     }
@@ -312,11 +316,12 @@ void CorporatePage::applyTheme()
 QWidget* CorporatePage::buildRoleSelector()
 {
     QWidget *container = new QWidget(this);
-    QHBoxLayout *layout = new QHBoxLayout(container);
+    QVBoxLayout *layout = new QVBoxLayout(container);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(20);
 
     QLabel *title = new QLabel(tr("Corporate management"), container);
+    title->setWordWrap(true);
     title->setStyleSheet("QLabel { font-size: 20px; font-weight: bold; }");
 
     QRadioButton *founderButton = new QRadioButton(tr("Founder"), container);
@@ -329,11 +334,13 @@ QWidget* CorporatePage::buildRoleSelector()
 
     connect(roleButtons_, SIGNAL(idClicked(int)), this, SLOT(onRoleChanged(int)));
 
-    layout->addWidget(title, 1);
-    layout->addWidget(founderButton);
-    layout->addWidget(directorButton);
-    layout->addWidget(signerButton);
-    layout->addStretch();
+    layout->addWidget(title);
+    QHBoxLayout* roles = new QHBoxLayout();
+    roles->addWidget(founderButton);
+    roles->addWidget(directorButton);
+    roles->addWidget(signerButton);
+    roles->addStretch();
+    layout->addLayout(roles);
 
     return container;
 }

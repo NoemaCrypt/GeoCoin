@@ -64,7 +64,7 @@ class GeographicLibBuildTests(unittest.TestCase):
         self.assertIn("checkout must be clean", result.stderr)
 
     def test_missing_submodule_is_rejected(self):
-        shutil.rmtree(self.source)
+        self.source.rename(self.root / "geographiclib-unavailable")
         result = self.configure()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("git submodule update --init --recursive", " ".join(result.stderr.split()))
@@ -72,8 +72,15 @@ class GeographicLibBuildTests(unittest.TestCase):
     def test_existing_build_rechecks_modified_source(self):
         result = self.configure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        with (self.source / "src/Geodesic.cpp").open("a") as output:
+        modified = self.source / "src/Geodesic.cpp"
+        with modified.open("a") as output:
             output.write("\n// source changed after configuration\n")
+        newest_generated = max(path.stat().st_mtime_ns
+                               for path in (self.root / "build").rglob("*") if path.is_file())
+        source_stat = modified.stat()
+        # Make the mutation observable even within one filesystem clock tick.
+        os.utime(modified, ns=(source_stat.st_atime_ns,
+                              max(source_stat.st_mtime_ns, newest_generated) + 2_000_000_000))
         result = subprocess.run(["cmake", "--build", str(self.root / "build"),
                                  "--target", "geocoin_geographiclib"], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)

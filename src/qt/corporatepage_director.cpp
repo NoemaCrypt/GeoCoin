@@ -102,7 +102,8 @@ void CorporatePage::updateDirectorCommitmentFields()
 
         QPushButton *loadBtn = new QPushButton(tr("📁"), container);
         loadBtn->setToolTip(tr("Load commitment from file"));
-        loadBtn->setMaximumWidth(40);
+        loadBtn->ensurePolished();
+        loadBtn->setMaximumWidth(loadBtn->sizeHint().expandedTo(loadBtn->minimumSizeHint()).width());
         loadBtn->setProperty("commitmentIndex", i);
         connect(loadBtn, &QPushButton::clicked, this, &CorporatePage::onLoadHierarchicalCommitmentFile);
 

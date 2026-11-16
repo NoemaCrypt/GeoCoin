@@ -22,6 +22,11 @@
 namespace geocoin::node {
 
 struct NodeTestAccess {
+    static bool has_no_default_seed_nodes(const Node& node)
+    {
+        return node.get_default_seed_nodes().empty();
+    }
+
     static bool addrman_contains(Node& node, const std::string& address)
     {
         std::lock_guard<std::mutex> lock(node.addrman_mutex_);
@@ -386,12 +391,19 @@ void test_seed_autoconnect_records_config_seed_attempt()
             "127.0.0.1:" + std::to_string(geocoin::test::find_free_port());
 
         auto config = base_config(dir);
+        // Mainnet adds a production addnode to fresh configs and public bootstrap
+        // targets independently of seed_nodes. Keep this loopback fixture isolated.
+        config.network = "degree-load";
         config.enable_auto_connect = true;
         config.seed_nodes = {target, target};
         config.max_outbound_peers = 1;
         config.dns_seed_delay_ms = 5000;
 
         geocoin::node::Node node(config);
+        expect(node.get_config().seed_nodes == config.seed_nodes,
+               "seed failure fixture has only its configured seeds");
+        expect(geocoin::node::NodeTestAccess::has_no_default_seed_nodes(node),
+               "seed failure fixture has no DNS or hardcoded public seeds");
         expect(node.start(make_key(0x45)), "seed auto-connect node starts");
         const auto status = node.get_status();
         expect(status.running, "seed auto-connect status reports running");
@@ -427,6 +439,7 @@ void test_seed_autoconnect_success_records_addrman()
         const std::string target = "127.0.0.1:" + std::to_string(acceptor.port());
 
         auto config = base_config(dir);
+        config.network = "degree-load";
         config.enable_auto_connect = true;
         config.seed_nodes = {target};
         config.max_outbound_peers = 1;
@@ -434,6 +447,10 @@ void test_seed_autoconnect_success_records_addrman()
         config.dns_seed_delay_ms = 5000;
 
         geocoin::node::Node node(config);
+        expect(node.get_config().seed_nodes == config.seed_nodes,
+               "seed success fixture has only its configured seeds");
+        expect(geocoin::node::NodeTestAccess::has_no_default_seed_nodes(node),
+               "seed success fixture has no DNS or hardcoded public seeds");
         expect(node.start(make_key(0x46)), "seed success auto-connect node starts");
         expect(wait_for_connected_peer(node, target),
                "seed success auto-connect creates outbound peer");

@@ -5,7 +5,7 @@ MultisigPage::MultisigPage(QWidget *parent)
       clientModel_(nullptr),
       walletModel_(nullptr),
       roleButtons_(new QButtonGroup(this)),
-      roleStack_(new QStackedWidget(this)),
+      roleStack_(GUIUtil::createContentStack(this)),
       configPathEdit_(nullptr),
       initiatorMSpin_(nullptr),
       initiatorNSpin_(nullptr),
@@ -172,7 +172,7 @@ void MultisigPage::setWalletModel(WalletModel *model)
     if (walletModel_) {
         QString walletDataDir = walletModel_->getDataDirectory();
         if (walletDataDir.isEmpty()) {
-            walletDataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+            walletDataDir = GUIUtil::applicationDataPath();
         }
         if (walletDataDir.isEmpty()) walletDataDir = QDir::homePath() + QStringLiteral("/.geocoin");
         walletDataDir = QDir(walletDataDir).absolutePath();
@@ -310,11 +310,13 @@ void MultisigPage::handleFinalizeFailed(const QString& error)
 
 void MultisigPage::setupUi()
 {
+    roleButtons_->setObjectName(QStringLiteral("roleSelector"));
     QVBoxLayout *rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(20, 20, 20, 20);
     rootLayout->setSpacing(15);
 
     statusLabel_ = new QLabel(tr("Ready"), this);
+    statusLabel_->setWordWrap(true);
     statusLabel_->setObjectName("multisigStatusLabel");
     statusLabel_->setStyleSheet("QLabel#multisigStatusLabel { font-weight: 600; color: #27ae60; }");
     rootLayout->addWidget(statusLabel_);
@@ -327,13 +329,14 @@ void MultisigPage::setupUi()
     roleStack_->addWidget(initiatorPage);
     roleStack_->addWidget(signerPage);
     roleStack_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    for (QLabel* label : roleStack_->findChildren<QLabel*>()) {
+        label->setWordWrap(true);
+    }
+    for (QFormLayout* form : roleStack_->findChildren<QFormLayout*>()) {
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    }
 
-    // Embed stack into scroll area to keep layout tidy on small screens
-    QScrollArea *scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidget(roleStack_);
-    rootLayout->addWidget(scroll, 1);
+    rootLayout->addWidget(roleStack_, 1);
 
     QGroupBox *logBox = new QGroupBox(tr("Activity log"), this);
     QVBoxLayout *logLayout = new QVBoxLayout(logBox);
@@ -380,7 +383,7 @@ void MultisigPage::setupUi()
     connect(historyLoadButton_, &QPushButton::clicked,
             this, &MultisigPage::onHistoryLoadClicked);
 
-    QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QString dataDir = GUIUtil::applicationDataPath();
     if (dataDir.isEmpty()) {
         dataDir = QDir::homePath() + "/.geocoin";
     }
@@ -409,11 +412,12 @@ void MultisigPage::schedulePendingRestorePrompt()
 QWidget* MultisigPage::buildRoleSelector()
 {
     QWidget *container = new QWidget(this);
-    QHBoxLayout *layout = new QHBoxLayout(container);
+    QVBoxLayout *layout = new QVBoxLayout(container);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(20);
 
     QLabel *title = new QLabel(tr("Multisig (Multisig)"), container);
+    title->setWordWrap(true);
     title->setStyleSheet("QLabel { font-size: 20px; font-weight: bold; }");
 
     QRadioButton *initiatorButton = new QRadioButton(tr("Initiator (create)"), container);
@@ -424,10 +428,12 @@ QWidget* MultisigPage::buildRoleSelector()
 
     connect(roleButtons_, SIGNAL(idClicked(int)), this, SLOT(onRoleChanged(int)));
 
-    layout->addWidget(title, 1);
-    layout->addWidget(initiatorButton);
-    layout->addWidget(signerButton);
-    layout->addStretch();
+    layout->addWidget(title);
+    QHBoxLayout* roles = new QHBoxLayout();
+    roles->addWidget(initiatorButton);
+    roles->addWidget(signerButton);
+    roles->addStretch();
+    layout->addLayout(roles);
     return container;
 }
 

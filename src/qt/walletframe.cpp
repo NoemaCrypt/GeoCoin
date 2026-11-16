@@ -13,9 +13,11 @@
 #include "nftpage.h"
 #include "clientmodel.h"
 #include "walletmodel.h"
+#include "guiutil.h"
 
 #include <QVBoxLayout>
 #include <QLabel>
+#include <QScrollArea>
 
 WalletFrame::WalletFrame(QWidget *parent) :
     QFrame(parent),
@@ -35,6 +37,7 @@ WalletFrame::WalletFrame(QWidget *parent) :
     layout->setContentsMargins(0, 0, 0, 0);
 
     walletStack = new QStackedWidget(this);
+    walletStack->setObjectName(QStringLiteral("walletStack"));
     walletStack->setStyleSheet("QStackedWidget { background-color: transparent; }");
     layout->addWidget(walletStack);
     buildPages();
@@ -43,33 +46,33 @@ WalletFrame::WalletFrame(QWidget *parent) :
 void WalletFrame::buildPages()
 {
     overviewPage = new OverviewPage(this);
-    walletStack->addWidget(overviewPage);
+    addPage(overviewPage, QStringLiteral("overview"));
 
     // Real pages
     sendCoinsPage = new SendCoinsPage(this);
-    walletStack->addWidget(sendCoinsPage);
+    addPage(sendCoinsPage, QStringLiteral("send"));
 
     receiveCoinsPage = new ReceiveCoinsPage(this);
-    walletStack->addWidget(receiveCoinsPage);
+    addPage(receiveCoinsPage, QStringLiteral("receive"));
 
     transactionPage = new TransactionPage(this);
-    walletStack->addWidget(transactionPage);
+    addPage(transactionPage, QStringLiteral("history"));
 
     miningPage = new MiningPage(this);
     connect(miningPage, &MiningPage::gpuMiningChanged,
             this, &WalletFrame::gpuMiningChanged);
-    walletStack->addWidget(miningPage);
+    addPage(miningPage, QStringLiteral("mining"));
 
     multisigPage = new MultisigPage(this);
-    walletStack->addWidget(multisigPage);
+    addPage(multisigPage, QStringLiteral("multisig"));
 
     corporatePage = new CorporatePage(this);
-    walletStack->addWidget(corporatePage);
+    addPage(corporatePage, QStringLiteral("corporate"));
 
     nftPage = new NFTPage(this);
-    walletStack->addWidget(nftPage);
+    addPage(nftPage, QStringLiteral("nft"));
 
-    walletStack->setCurrentWidget(overviewPage);
+    setCurrentPage(overviewPage);
     applyTheme();
     if (clientModel) {
         ClientModel* model = clientModel;
@@ -83,6 +86,26 @@ void WalletFrame::buildPages()
     }
 }
 
+void WalletFrame::addPage(QWidget* page, const QString& id)
+{
+    QScrollArea* scroll = GUIUtil::createPageScrollArea(page, walletStack);
+    scroll->setObjectName(QStringLiteral("pageScroll_") + id);
+    pageScrollAreas.insert(page, scroll);
+    walletStack->addWidget(scroll);
+}
+
+QScrollArea* WalletFrame::scrollAreaForPage(QWidget* page) const
+{
+    return pageScrollAreas.value(page, nullptr);
+}
+
+void WalletFrame::setCurrentPage(QWidget* page)
+{
+    if (QScrollArea* scroll = scrollAreaForPage(page)) {
+        walletStack->setCurrentWidget(scroll);
+    }
+}
+
 void WalletFrame::rebuildForLanguageChange()
 {
     if (!walletStack) {
@@ -91,6 +114,7 @@ void WalletFrame::rebuildForLanguageChange()
     const int index = walletStack->currentIndex();
     stopGpuMining();
     waitForPendingMiningStop();
+    pageScrollAreas.clear();
     while (walletStack->count() > 0) {
         QWidget* page = walletStack->widget(0);
         walletStack->removeWidget(page);
@@ -112,6 +136,9 @@ void WalletFrame::rebuildForLanguageChange()
 
 WalletFrame::~WalletFrame()
 {
+    for (MiningPage* page : findChildren<MiningPage*>()) {
+        disconnect(page, nullptr, this, nullptr);
+    }
 }
 
 void WalletFrame::setClientModel(ClientModel *model)
@@ -194,7 +221,8 @@ bool WalletFrame::hasRequiredPages() const
            multisigPage != nullptr &&
            corporatePage != nullptr &&
            nftPage != nullptr &&
-           walletStack->count() >= 8;
+           walletStack->count() == 8 &&
+           pageScrollAreas.size() == 8;
 }
 
 int WalletFrame::pageCount() const
@@ -252,40 +280,40 @@ void WalletFrame::applyTheme()
 
 void WalletFrame::gotoOverviewPage()
 {
-    walletStack->setCurrentWidget(overviewPage);
+    setCurrentPage(overviewPage);
 }
 
 void WalletFrame::gotoSendCoinsPage()
 {
-    walletStack->setCurrentWidget(sendCoinsPage);
+    setCurrentPage(sendCoinsPage);
 }
 
 void WalletFrame::gotoReceiveCoinsPage()
 {
-    walletStack->setCurrentWidget(receiveCoinsPage);
+    setCurrentPage(receiveCoinsPage);
 }
 
 void WalletFrame::gotoHistoryPage()
 {
-    walletStack->setCurrentWidget(transactionPage);
+    setCurrentPage(transactionPage);
 }
 
 void WalletFrame::gotoMiningPage()
 {
-    walletStack->setCurrentWidget(miningPage);
+    setCurrentPage(miningPage);
 }
 
 void WalletFrame::gotoMultisigPage()
 {
-    walletStack->setCurrentWidget(multisigPage);
+    setCurrentPage(multisigPage);
 }
 
 void WalletFrame::gotoCorporatePage()
 {
-    walletStack->setCurrentWidget(corporatePage);
+    setCurrentPage(corporatePage);
 }
 
 void WalletFrame::gotoNftPage()
 {
-    walletStack->setCurrentWidget(nftPage);
+    setCurrentPage(nftPage);
 }

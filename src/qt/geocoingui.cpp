@@ -25,6 +25,9 @@
 #include <QVBoxLayout>
 #include <QMessageBox>
 #include <QCloseEvent>
+#include <QResizeEvent>
+#include <QScreen>
+#include <QTimer>
 #include <QInputDialog>
 #include <QFileDialog>
 #include <QFile>
@@ -61,7 +64,7 @@ GeoCoinGUI::GeoCoinGUI(const NetworkStyle *networkStyle, QWidget *parent) :
                    Qt::WindowMaximizeButtonHint |
                    Qt::WindowCloseButtonHint);
 
-    setMinimumSize(860, 560);
+    setMinimumSize(640, 480);
     resize(960, 640);
 
     applyCurrentTheme();
@@ -95,6 +98,11 @@ GeoCoinGUI::GeoCoinGUI(const NetworkStyle *networkStyle, QWidget *parent) :
 
 GeoCoinGUI::~GeoCoinGUI()
 {
+    // Child mining pages emit their final status during QWidget teardown,
+    // after this class's QString members have already been destroyed.
+    if (walletFrame) {
+        disconnect(walletFrame, nullptr, this, nullptr);
+    }
 }
 
 void GeoCoinGUI::createActions()
@@ -459,6 +467,7 @@ void GeoCoinGUI::applyCurrentTheme()
     if (walletFrame) {
         walletFrame->applyTheme();
     }
+    updateNavigationWidths();
 }
 
 void GeoCoinGUI::retranslateUi()
@@ -510,6 +519,7 @@ void GeoCoinGUI::retranslateUi()
     if (nftAction) nftAction->setText(tr("&NFT / Cadastr"));
     if (langEnglishAction) langEnglishAction->setText(tr("&English"));
     if (langRussianAction) langRussianAction->setText(tr("&Russian"));
+    updateNavigationWidths();
 }
 
 void GeoCoinGUI::createToolBars()
@@ -520,8 +530,9 @@ void GeoCoinGUI::createToolBars()
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
     toolbar->setStyleSheet(QStringLiteral(
-        "QToolBar#tabsToolbar { spacing: 3px; }"
-        "QToolBar#tabsToolbar QToolButton { padding: 7px 10px; min-width: 0px; }"
+        "QToolBar#tabsToolbar { spacing: 3px; padding: 2px; }"
+        "QToolBar#tabsToolbar QToolButton { padding: 7px 10px; }"
+        "QToolBar#tabsToolbar QToolButton#qt_toolbar_ext_button { padding: 0px; min-width: 0px; }"
     ));
 
     toolbar->addAction(overviewAction);
@@ -562,6 +573,23 @@ void GeoCoinGUI::createToolBars()
         btn->setToolTip(QString());
         btn->setWhatsThis(QString());
     }
+    updateNavigationWidths();
+}
+
+void GeoCoinGUI::updateNavigationWidths()
+{
+    auto* toolbar = findChild<QToolBar*>(QStringLiteral("tabsToolbar"));
+    if (!toolbar) return;
+    if (auto* overflow = toolbar->findChild<QToolButton*>(QStringLiteral("qt_toolbar_ext_button"))) {
+        overflow->setToolTip(tr("More"));
+        overflow->setAccessibleName(tr("More"));
+    }
+    for (QAction* action : toolbar->actions()) {
+        if (auto* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(action))) {
+            button->ensurePolished();
+            button->setMinimumWidth(button->sizeHint().width());
+        }
+    }
 }
 
 void GeoCoinGUI::createStatusBar()
@@ -592,11 +620,21 @@ void GeoCoinGUI::createStatusBar()
     progressBar = new QProgressBar();
     progressBar->setAlignment(Qt::AlignCenter);
     progressBar->setVisible(false);
-    statusBar()->addWidget(progressBar);
+    progressBar->setMinimumWidth(64);
+    progressBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    statusBar()->addWidget(progressBar, 1);
 
     labelHashrateStatus = new QLabel(tr("Mining: idle (0 H/s)"));
+    labelHashrateStatus->installEventFilter(this);
+    statusMiningText_ = labelHashrateStatus->text();
     labelHashrateStatus->setStyleSheet("QLabel { color: " + GUIUtil::Theme::ColorGray + "; font-weight: bold; }");
     statusBar()->addPermanentWidget(labelHashrateStatus, 1);
+    labelHashrateStatus->setMinimumWidth(0);
+    labelHashrateStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    labelHashrateStatus->setWordWrap(false);
+    labelConnectionsText->setWordWrap(false);
+    labelBlocksText->setWordWrap(false);
+    progressBarLabel->setWordWrap(false);
 }
 
 void GeoCoinGUI::setClientModel(ClientModel *model)
@@ -689,6 +727,17 @@ void GeoCoinGUI::restoreUiSettings()
         restoreState(state);
     }
 
+    if (QScreen* currentScreen = screen()) {
+        const QRect available = currentScreen->availableGeometry();
+        const QSize usable = (available.size() - QSize(16, 48)).expandedTo(QSize(1, 1));
+        setMinimumSize(QSize(640, 480).boundedTo(usable));
+        if (!isMaximized()) {
+            resize(size().expandedTo(minimumSize()).boundedTo(usable));
+            move(qBound(available.left(), x(), available.right() - width() + 1),
+                 qBound(available.top(), y(), available.bottom() - height() - 32));
+        }
+    }
+
     const bool restoreLastPage = settings.value(QStringLiteral("ui/restore_last_page"), true).toBool();
     const QString startupPage = settings.value(QStringLiteral("ui/startup_page"), QStringLiteral("overview")).toString();
     const QString page = restoreLastPage
@@ -720,18 +769,20 @@ void GeoCoinGUI::gotoPageById(const QString& pageId)
 
 void GeoCoinGUI::setNumConnections(int count)
 {
+    statusConnectionsCount_ = count;
     labelConnectionsIcon->setToolTip(tr("%n active connection(s) to GeoCoin network", "", count));
 
     if (labelConnectionsText) {
-        labelConnectionsText->setText(tr("%n peer(s)", "", count));
+        updateStatusBarLayout();
     }
 }
 
 void GeoCoinGUI::setNumBlocks(int count)
 {
+    statusBlocksCount_ = count;
     labelBlocksIcon->setToolTip(tr("Processed %n block(s) of transaction history.", "", count));
     if (labelBlocksText) {
-        labelBlocksText->setText(tr("%n block(s)", "", count));
+        updateStatusBarLayout();
     }
 }
 
@@ -777,11 +828,51 @@ void GeoCoinGUI::refreshMiningStatusBar()
         text = tr("Mining: idle (0 H/s)");
         labelHashrateStatus->setStyleSheet("QLabel { color: " + GUIUtil::Theme::ColorGray + "; font-weight: bold; }");
     }
-    labelHashrateStatus->setText(text);
+    statusMiningText_ = text;
+    labelHashrateStatus->setToolTip(text);
+    updateStatusBarLayout();
+}
+
+void GeoCoinGUI::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    if (labelHashrateStatus && progressBar) {
+        updateStatusBarLayout();
+        QTimer::singleShot(0, this, &GeoCoinGUI::updateStatusBarLayout);
+    }
+}
+
+void GeoCoinGUI::updateStatusBarLayout()
+{
+    const bool compact = width() < 900;
+    const QString peers = tr("%n peer(s)", "", statusConnectionsCount_);
+    const QString blocks = tr("%n block(s)", "", statusBlocksCount_);
+    labelConnectionsText->setText(peers);
+    labelConnectionsText->setToolTip(peers);
+    labelBlocksText->setText(compact ? QString::number(statusBlocksCount_) : blocks);
+    labelBlocksText->setToolTip(blocks);
+    progressBarLabel->setVisible(statusSyncActive_ && !compact);
+    progressBar->setFormat(compact ? QStringLiteral("%p%") : progressBar->toolTip());
+    updateMiningStatusText();
+}
+
+void GeoCoinGUI::updateMiningStatusText()
+{
+    labelHashrateStatus->setText(labelHashrateStatus->fontMetrics().elidedText(
+        statusMiningText_, Qt::ElideRight, qMax(0, labelHashrateStatus->contentsRect().width())));
+}
+
+bool GeoCoinGUI::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == labelHashrateStatus && event->type() == QEvent::Resize) {
+        updateMiningStatusText();
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void GeoCoinGUI::setSyncProgress(double progress, int current, int target)
 {
+    statusSyncActive_ = progress < 1.0 && target > 0;
     if (progress < 1.0 && target > 0) {
         // Show progress bar
         progressBarLabel->setVisible(true);
@@ -789,6 +880,7 @@ void GeoCoinGUI::setSyncProgress(double progress, int current, int target)
 
         progressBarLabel->setText(tr("Synchronizing..."));
         progressBar->setFormat(tr("%1 / %2 blocks").arg(current).arg(target));
+        progressBar->setToolTip(tr("%1 / %2 blocks").arg(current).arg(target));
         progressBar->setMaximum(target);
         progressBar->setValue(current);
 
@@ -799,6 +891,7 @@ void GeoCoinGUI::setSyncProgress(double progress, int current, int target)
         progressBar->setVisible(false);
         labelBlocksIcon->setToolTip(tr("Synchronized with the network"));
     }
+    updateStatusBarLayout();
 }
 
 void GeoCoinGUI::aboutClicked()
@@ -823,6 +916,8 @@ void GeoCoinGUI::optionsClicked()
     dialog.setStyleSheet(GUIUtil::dialogStyleSheet(GUIUtil::currentTheme()));
 
     QFormLayout* form = new QFormLayout(&dialog);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     QComboBox* languageCombo = new QComboBox(&dialog);
     languageCombo->addItem(tr("English"), QStringLiteral("en"));

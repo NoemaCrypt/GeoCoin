@@ -81,6 +81,7 @@ void ReceiveCoinsPage::setupUi()
     labelQR->setMinimumSize(256, 256);
     labelQR->setMaximumSize(256, 256);
     labelQR->setAlignment(Qt::AlignCenter);
+    labelQR->setWordWrap(true);
     labelQR->setStyleSheet("QLabel { background-color: white; border: 1px solid gray; }");
     labelQR->setText(tr("QR code will appear after wallet load"));
     qrLayout->addWidget(labelQR, 0, Qt::AlignCenter);

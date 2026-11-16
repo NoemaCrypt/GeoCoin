@@ -98,8 +98,8 @@ void MiningPage::setupUi()
     addressLayout->addWidget(new QLabel(tr("Mining Address:"), this));
     labelMiningAddress = new QLabel(tr("No wallet loaded"), this);
     labelMiningAddress->setFont(GUIUtil::geocoinAddressFont());
-    addressLayout->addWidget(labelMiningAddress);
-    addressLayout->addStretch();
+    labelMiningAddress->setWordWrap(true);
+    addressLayout->addWidget(labelMiningAddress, 1);
     statusLayout->addLayout(addressLayout);
 
     layout->addWidget(statusGroup);
@@ -172,6 +172,7 @@ void MiningPage::setupUi()
     gpuForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     gpuForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     gpuForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    gpuForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     gpuForm->setHorizontalSpacing(18);
     gpuForm->setVerticalSpacing(14);
     QHBoxLayout *gpuBackendLayout = new QHBoxLayout();
@@ -234,6 +235,7 @@ void MiningPage::setupUi()
 
     QGroupBox *gpuStatusGroup = new QGroupBox(tr("GPU Status"), this);
     QFormLayout *gpuStatusLayout = new QFormLayout(gpuStatusGroup);
+    gpuStatusLayout->setRowWrapPolicy(QFormLayout::WrapLongRows);
     gpuStatusLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     gpuStatusLayout->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     gpuStatusLayout->setHorizontalSpacing(16);
@@ -356,6 +358,15 @@ void MiningPage::applyModeTabsStyle()
         modeTabs->tabBar()->setMinimumHeight(48);
         modeTabs->tabBar()->setMinimumWidth(340);
         modeTabs->tabBar()->setStyleSheet(tabStyle);
+    }
+}
+
+void MiningPage::updateGpuBackendMinimumSizes()
+{
+    for (QCheckBox* backend : {checkGpuCuda, checkGpuHip, checkGpuOpenCl}) {
+        if (!backend) continue;
+        backend->ensurePolished();
+        backend->setMinimumSize(backend->sizeHint().expandedTo(backend->minimumSizeHint()));
     }
 }
 

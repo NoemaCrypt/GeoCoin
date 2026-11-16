@@ -2,8 +2,11 @@
 #include "geocoin/nft/geometry_codec.hpp"
 #include <QGraphicsView>
 #include <QGraphicsScene>
+#include <QGridLayout>
+#include <QGuiApplication>
 #include <QPainterPath>
 #include <QResizeEvent>
+#include <QScreen>
 #include <QTimer>
 #include "geocoin/nft/geodesy.hpp"
 
@@ -114,6 +117,8 @@ public:
         buildingCountEdit_->setValue(0);
 
         QFormLayout* form = new QFormLayout();
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
         form->addRow(tr("Name *"), nameEdit_);
         form->addRow(tr("Description"), descriptionEdit_);
 
@@ -175,12 +180,12 @@ public:
 
         {
             QWidget* row = new QWidget(this);
-            QHBoxLayout* rowLayout = new QHBoxLayout(row);
+            QGridLayout* rowLayout = new QGridLayout(row);
             rowLayout->setContentsMargins(0, 0, 0, 0);
-            rowLayout->addWidget(centerLatDeg_);
-            rowLayout->addWidget(centerLonDeg_);
-            rowLayout->addWidget(sizeMeters_);
-            rowLayout->addWidget(autoFillSquareButton_);
+            rowLayout->addWidget(centerLatDeg_, 0, 0);
+            rowLayout->addWidget(centerLonDeg_, 0, 1);
+            rowLayout->addWidget(sizeMeters_, 1, 0);
+            rowLayout->addWidget(autoFillSquareButton_, 1, 1);
             row->setLayout(rowLayout);
 
             centerLatDeg_->setToolTip(tr("Center latitude (degrees)"));
@@ -208,6 +213,12 @@ public:
         connect(geometryTimer, &QTimer::timeout, this, [this] { updateGeometryPreview(); });
         form->addRow(tr("Fee (GC)"), feeGc_);
         form->addRow(tr("Royalty percent"), royaltyPercent_);
+        for (int row = 0; row < form->rowCount(); ++row) {
+            QLayoutItem* item = form->itemAt(row, QFormLayout::LabelRole);
+            if (QLabel* label = item ? qobject_cast<QLabel*>(item->widget()) : nullptr) {
+                label->setWordWrap(true);
+            }
+        }
 
         QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
         connect(buttons, &QDialogButtonBox::accepted, this, &CreateNftDialog::onSubmit);
@@ -216,17 +227,20 @@ public:
         QWidget* formWidget = new QWidget(this);
         formWidget->setLayout(form);
 
-        QScrollArea* scroll = new QScrollArea(this);
-        scroll->setWidget(formWidget);
-        scroll->setWidgetResizable(true);
-        scroll->setFrameShape(QFrame::NoFrame);
+        QScrollArea* scroll = GUIUtil::createPageScrollArea(formWidget, this);
+        scroll->setObjectName(QStringLiteral("createNftScrollArea"));
 
         QVBoxLayout* root = new QVBoxLayout(this);
         root->addWidget(scroll);
         root->addWidget(buttons);
         setLayout(root);
 
-        setMinimumSize(900, 720);
+        const QScreen* targetScreen = parent ? parent->screen() : QGuiApplication::primaryScreen();
+        const QSize available = targetScreen
+            ? targetScreen->availableGeometry().size() - QSize(32, 64)
+            : QSize(640, 480);
+        setMinimumSize(QSize(640, 480).boundedTo(available));
+        resize(QSize(900, 720).boundedTo(available));
 
         // Load last used certificate template (if any)
         QSettings settings;

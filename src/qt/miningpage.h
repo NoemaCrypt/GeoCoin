@@ -110,6 +110,7 @@ private:
     void createGpuMinerProcess();
     void resetGpuMinerProcess(bool forceStop);
     void applyModeTabsStyle();
+    void updateGpuBackendMinimumSizes();
     void refreshWalletState();
 
 private slots:
