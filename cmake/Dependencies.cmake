@@ -182,10 +182,6 @@ else()
     set(_geocoin_rocksdb_check_includes "${ROCKSDB_INCLUDE_DIR}")
 endif()
 
-if(GEOCOIN_MSVC_STATIC_RUNTIME_LIB)
-    target_link_libraries(geocoin_rocksdb INTERFACE "${GEOCOIN_MSVC_STATIC_RUNTIME_LIB}")
-    list(APPEND _geocoin_rocksdb_check_libraries "${GEOCOIN_MSVC_STATIC_RUNTIME_LIB}")
-endif()
 
 # Check the selected headers and library together, before building the node.
 # Older distro packages lack write stalls and can also fail in db.h under C++20.

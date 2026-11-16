@@ -212,51 +212,6 @@ if(WIN32 AND GEOCOIN_WINDOWS_STATIC_RELEASE)
             target_link_libraries(geocoin-qt PRIVATE ${_qt_static_plugin})
         endif()
     endforeach()
-    if(MSVC)
-        set(_geocoin_msvc_static_runtime "")
-        set(_geocoin_msvc_runtime_candidates)
-        foreach(_geocoin_msvc_root
-                "$ENV{VCToolsInstallDir}"
-                "${CMAKE_GENERATOR_INSTANCE}/VC/Tools/MSVC"
-                "$ENV{VSINSTALLDIR}/VC/Tools/MSVC"
-                "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC"
-                "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC"
-                "D:/VS/VC/Tools/MSVC"
-                "D:/Visual Studio/Community/VC/Tools/MSVC")
-            if(_geocoin_msvc_root)
-                file(TO_CMAKE_PATH "${_geocoin_msvc_root}" _geocoin_msvc_root)
-                if(EXISTS "${_geocoin_msvc_root}/lib/x64/libcpmt.lib")
-                    list(APPEND _geocoin_msvc_runtime_candidates "${_geocoin_msvc_root}/lib/x64/libcpmt.lib")
-                else()
-                    file(GLOB _geocoin_msvc_globbed_libcpmt
-                        "${_geocoin_msvc_root}/*/lib/x64/libcpmt.lib")
-                    list(APPEND _geocoin_msvc_runtime_candidates ${_geocoin_msvc_globbed_libcpmt})
-                endif()
-            endif()
-        endforeach()
-
-        if(_geocoin_msvc_runtime_candidates)
-            list(REMOVE_DUPLICATES _geocoin_msvc_runtime_candidates)
-            set(_geocoin_msvc_best_version "0")
-            foreach(_geocoin_msvc_candidate ${_geocoin_msvc_runtime_candidates})
-                get_filename_component(_geocoin_msvc_arch_dir "${_geocoin_msvc_candidate}" DIRECTORY)
-                get_filename_component(_geocoin_msvc_lib_dir "${_geocoin_msvc_arch_dir}" DIRECTORY)
-                get_filename_component(_geocoin_msvc_version_dir "${_geocoin_msvc_lib_dir}" DIRECTORY)
-                get_filename_component(_geocoin_msvc_version "${_geocoin_msvc_version_dir}" NAME)
-                if(_geocoin_msvc_version VERSION_GREATER _geocoin_msvc_best_version)
-                    set(_geocoin_msvc_best_version "${_geocoin_msvc_version}")
-                    set(_geocoin_msvc_static_runtime "${_geocoin_msvc_candidate}")
-                endif()
-            endforeach()
-        endif()
-
-        if(_geocoin_msvc_static_runtime)
-            message(STATUS "GeoCoin Qt static runtime: ${_geocoin_msvc_static_runtime}")
-            target_link_libraries(geocoin-qt PRIVATE "${_geocoin_msvc_static_runtime}")
-        else()
-            message(WARNING "GeoCoin Qt static runtime libcpmt.lib was not found; Clang static Qt link may fail on new MSVC STL symbols.")
-        endif()
-    endif()
 endif()
 
 # Link qrencode if found

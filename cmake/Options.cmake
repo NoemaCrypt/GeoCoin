@@ -138,50 +138,13 @@ set(GEOCOIN_HIP_PERSISTENT_GRID "OFF" CACHE STRING "HIP miner persistent grid sc
 set(GEOCOIN_HIP_PERSISTENT_BLOCKS_PER_SM "2" CACHE STRING "HIP miner persistent grid resident blocks per compute unit")
 set(GEOCOIN_HIP_EXTRA_HIPCC_FLAGS "" CACHE STRING "Optional semicolon-separated extra hipcc flags for HIP miner tuning")
 
+# The selected compiler/toolset resolves its own CRT through this setting.
+# Explicit paths from another Visual Studio installation can mix incompatible CRTs.
 if(MSVC OR (WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     if(GEOCOIN_WINDOWS_STATIC_RELEASE OR VCPKG_TARGET_TRIPLET MATCHES "static")
         set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     else()
         set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-    endif()
-endif()
-
-set(GEOCOIN_MSVC_STATIC_RUNTIME_LIB "")
-if(WIN32 AND GEOCOIN_WINDOWS_STATIC_RELEASE AND MSVC)
-    set(_geocoin_msvc_runtime_candidates)
-    foreach(_geocoin_msvc_root
-            "$ENV{VCToolsInstallDir}"
-            "${CMAKE_GENERATOR_INSTANCE}/VC/Tools/MSVC"
-            "$ENV{VSINSTALLDIR}/VC/Tools/MSVC"
-            "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC"
-            "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC"
-            "D:/VS/VC/Tools/MSVC"
-            "D:/Visual Studio/Community/VC/Tools/MSVC")
-        if(_geocoin_msvc_root)
-            file(TO_CMAKE_PATH "${_geocoin_msvc_root}" _geocoin_msvc_root)
-            if(EXISTS "${_geocoin_msvc_root}/lib/x64/libcpmt.lib")
-                list(APPEND _geocoin_msvc_runtime_candidates "${_geocoin_msvc_root}/lib/x64/libcpmt.lib")
-            else()
-                file(GLOB _geocoin_msvc_globbed_libcpmt
-                    "${_geocoin_msvc_root}/*/lib/x64/libcpmt.lib")
-                list(APPEND _geocoin_msvc_runtime_candidates ${_geocoin_msvc_globbed_libcpmt})
-            endif()
-        endif()
-    endforeach()
-
-    if(_geocoin_msvc_runtime_candidates)
-        list(REMOVE_DUPLICATES _geocoin_msvc_runtime_candidates)
-        set(_geocoin_msvc_best_version "0")
-        foreach(_geocoin_msvc_candidate ${_geocoin_msvc_runtime_candidates})
-            get_filename_component(_geocoin_msvc_arch_dir "${_geocoin_msvc_candidate}" DIRECTORY)
-            get_filename_component(_geocoin_msvc_lib_dir "${_geocoin_msvc_arch_dir}" DIRECTORY)
-            get_filename_component(_geocoin_msvc_version_dir "${_geocoin_msvc_lib_dir}" DIRECTORY)
-            get_filename_component(_geocoin_msvc_version "${_geocoin_msvc_version_dir}" NAME)
-            if(_geocoin_msvc_version VERSION_GREATER _geocoin_msvc_best_version)
-                set(_geocoin_msvc_best_version "${_geocoin_msvc_version}")
-                set(GEOCOIN_MSVC_STATIC_RUNTIME_LIB "${_geocoin_msvc_candidate}")
-            endif()
-        endforeach()
     endif()
 endif()
 
