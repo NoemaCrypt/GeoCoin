@@ -223,8 +223,12 @@ void network_bootstrap_plans() {
         if (network != consensus::Network::MAIN) {
             check(plan.default_seed_nodes.empty(), label + "no public bootstrap peers are configured");
         } else {
-            check(plan.default_seed_nodes == std::vector<std::string>{"45.12.114.4:3030"},
-                  label + "bootstrap uses only the operational mainnet endpoint");
+            check(plan.default_seed_nodes == std::vector<std::string>{
+                      "45.12.114.4:3030", "188.130.154.62:3030",
+                      "217.60.37.56:3030", "31.58.79.166:3030",
+                      "seed1.geocoin.network:3030", "seed2.geocoin.network:3030",
+                      "seed3.geocoin.network:3030", "seed4.geocoin.network:3030"},
+                  label + "bootstrap uses all verified fixed and DNS mainnet endpoints");
         }
         const std::string local = "127.0.0.1:" + std::to_string(consensus::Params().default_port());
         check(!plan.base_priority_targets.empty() &&
