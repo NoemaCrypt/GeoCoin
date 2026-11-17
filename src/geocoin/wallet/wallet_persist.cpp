@@ -33,6 +33,8 @@ bool Wallet::save_to_file(
     bool preserve_backup
 ) const {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!file_path_.empty() && (loaded_format_ == WalletFileFormat::LEGACY_V11 ||
+        loaded_format_ == WalletFileFormat::LEGACY_V12)) return false;
     if (vault_mode_) {
         if (!password.empty() && !verify_vault_password_locked(password)) return false;
         return save_vault_locked(filename, preserve_backup);
@@ -46,6 +48,8 @@ bool Wallet::change_password(
     const std::string& new_password
 ) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!file_path_.empty() && (loaded_format_ == WalletFileFormat::LEGACY_V11 ||
+        loaded_format_ == WalletFileFormat::LEGACY_V12)) return false;
     if (vault_mode_) {
         if (new_password.empty()) return false;
         bytes master;
@@ -60,7 +64,7 @@ bool Wallet::change_password(
             return false;
         }
         std::error_code error;
-        std::filesystem::remove(filename + ".bak", error);
+        std::filesystem::remove(wallet_path(filename + ".bak"), error);
         if (error || !sync_parent_directory(filename)) {
             last_save_status_ = SaveStatus::COMMITTED_NOT_DURABLE;
             return false;
@@ -83,10 +87,12 @@ bool Wallet::save_to_file_locked(
     const std::string& filename,
     const std::string& password,
     bool preserve_backup,
-    bool replace_password_verifier
+    bool replace_password_verifier,
+    bool preserve_password_verifier
 ) const {
     last_save_status_ = SaveStatus::FAILED;
-    const std::string selected_path = std::filesystem::absolute(filename).lexically_normal().string();
+    const std::string selected_path = absolute_wallet_path(filename);
+    if (!file_path_.empty() && loaded_encrypted_ && password.empty()) return false;
 
     // БЕЗОПАСНОСТЬ: не позволяем тихо пересохранить зашифрованный кошелек без пароля
     // (иначе файл станет plaintext и приватные ключи утекут на диск).
@@ -133,7 +139,7 @@ bool Wallet::save_to_file_locked(
 
     }
 
-    if (!replace_password_verifier && !password.empty() && !has_password_hash_) {
+    if (!preserve_password_verifier && !replace_password_verifier && !password.empty() && !has_password_hash_) {
         bytes salt;
         SensitiveBytesGuard salt_guard{salt};
         uint32_t iters = 0;
@@ -378,13 +384,13 @@ bool Wallet::save_to_file_locked(
         GEO_LOG_ERROR("wallet", "Failed to write the temporary wallet file");
         close_fd_without_sync(temp_fd);
         std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
+        std::filesystem::remove(wallet_path(tmp_filename), remove_ec);
         return false;
     }
     if (!sync_and_close_fd(temp_fd)) {
         GEO_LOG_ERROR("wallet", "Failed to durably flush the temporary wallet file");
         std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
+        std::filesystem::remove(wallet_path(tmp_filename), remove_ec);
         return false;
     }
     // Rename preserves this file's owner-only mode/DACL. Secure the temporary
@@ -393,7 +399,7 @@ bool Wallet::save_to_file_locked(
     if (!set_private_file_permissions(tmp_filename)) {
         GEO_LOG_ERROR("wallet", "Failed to secure the temporary wallet file");
         std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
+        std::filesystem::remove(wallet_path(tmp_filename), remove_ec);
         return false;
     }
 
@@ -401,15 +407,15 @@ bool Wallet::save_to_file_locked(
     bool previous_wallet_was_plaintext = false;
     bool previous_encryption_flag_known = false;
     bool keep_previous_backup = false;
-    const bool had_previous_wallet = std::filesystem::exists(filename, ec);
+    const bool had_previous_wallet = std::filesystem::exists(wallet_path(filename), ec);
     if (ec) {
-        std::filesystem::remove(tmp_filename, ec);
+        std::filesystem::remove(wallet_path(tmp_filename), ec);
         return false;
     }
     if (had_previous_wallet) {
         if (!is_regular_private_file(filename) || !set_private_file_permissions(filename)) {
             GEO_LOG_ERROR("wallet", "Refusing to replace a wallet that is not a private, owner-controlled regular file");
-            std::filesystem::remove(tmp_filename, ec);
+            std::filesystem::remove(wallet_path(tmp_filename), ec);
             return false;
         }
 
@@ -424,23 +430,23 @@ bool Wallet::save_to_file_locked(
             (previous_encryption_flag_known && !previous_wallet_was_plaintext);
         keep_previous_backup = preserve_backup && !replace_password_verifier && backup_is_safe;
 
-        std::filesystem::remove(bak_filename, ec);
+        std::filesystem::remove(wallet_path(bak_filename), ec);
         if (ec) {
             GEO_LOG_ERROR("wallet", "Failed to remove the previous wallet backup: " << ec.message());
-            std::filesystem::remove(tmp_filename, ec);
+            std::filesystem::remove(wallet_path(tmp_filename), ec);
             return false;
         }
         if (keep_previous_backup) {
             if (!rename_file_durably(filename, bak_filename, false, ec)) {
                 GEO_LOG_ERROR("wallet", "Failed to move wallet to backup: " << ec.message());
-                std::filesystem::remove(tmp_filename, ec);
+                std::filesystem::remove(wallet_path(tmp_filename), ec);
                 return false;
             }
             if (!set_private_file_permissions(bak_filename)) {
                 GEO_LOG_ERROR("wallet", "Failed to secure wallet backup permissions");
                 std::error_code restore_ec;
                 (void)rename_file_durably(bak_filename, filename, false, restore_ec);
-                std::filesystem::remove(tmp_filename, ec);
+                std::filesystem::remove(wallet_path(tmp_filename), ec);
                 return false;
             }
         }
@@ -452,13 +458,13 @@ bool Wallet::save_to_file_locked(
         // Пытаемся восстановить backup, если он есть.
         if (keep_previous_backup) {
             std::error_code exists_ec;
-            if (std::filesystem::exists(bak_filename, exists_ec) && !exists_ec) {
+            if (std::filesystem::exists(wallet_path(bak_filename), exists_ec) && !exists_ec) {
                 std::error_code restore_ec;
                 (void)rename_file_durably(bak_filename, filename, false, restore_ec);
             }
         }
         std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
+        std::filesystem::remove(wallet_path(tmp_filename), remove_ec);
         return false;
     }
 

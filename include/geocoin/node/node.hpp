@@ -276,6 +276,9 @@ private:
     mutable std::mutex lifecycle_control_mutex_;
     LifecycleState lifecycle_state_{LifecycleState::CREATED};
     mutable std::mutex mining_control_mutex_;
+    std::atomic<size_t> mining_threads_requested_{0};
+    std::atomic<size_t> mining_threads_spawned_{0};
+    std::atomic<size_t> mining_threads_active_{0};
 
     // Статистика майнинга
     mutable std::atomic<uint64_t> total_hashes_;
@@ -285,6 +288,7 @@ private:
     std::chrono::steady_clock::time_point mining_start_time_;
     mutable std::chrono::steady_clock::time_point mining_last_hashrate_time_;
     mutable std::mutex mining_stats_mutex_;
+    std::string mining_error_; // Protected by mining_stats_mutex_; retained through stop.
     std::mutex mining_output_mutex_;  // Для синхронизации вывода
     mutable std::mutex witness_request_mutex_;
     std::map<std::string, std::chrono::steady_clock::time_point>
@@ -411,6 +415,7 @@ private:
      */
     bool start_mining_unlocked();
     void mining_thread(int thread_id);
+    void record_cpu_mining_failure(size_t worker, const std::string& error);
 
     /**
      * @brief Создать блок для майнинга

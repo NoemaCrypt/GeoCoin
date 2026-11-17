@@ -1,0 +1,18 @@
+diff --git a/port/win/port_win.cc b/port/win/port_win.cc
+--- a/port/win/port_win.cc
++++ b/port/win/port_win.cc
+@@ -48,7 +48,13 @@ std::string utf16_to_utf8(const std::wstring& utf16) {
+ 
+ std::wstring utf8_to_utf16(const std::string& utf8) {
+   std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+-  return converter.from_bytes(utf8);
++  auto path = converter.from_bytes(utf8);
++  // RocksDB appends '/' separators internally. Win32 extended-length paths
++  // disable slash normalization, so normalize before calling the wide API.
++  for (auto& character : path) {
++    if (character == L'/') character = L'\\';
++  }
++  return path;
+ }
+ #endif
+ 

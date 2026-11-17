@@ -4,7 +4,7 @@ set(_geocoin_gpu_sources
     tools/gpu_miner_hip_stub.cpp
     tools/gpu_miner_opencl_stub.cpp
 )
-set(_geocoin_gpu_libs geocoin_crypto)
+set(_geocoin_gpu_libs geocoin_crypto Boost::headers)
 set(_geocoin_gpu_defs "")
 set(_geocoin_gpu_include_dirs "")
 set(_geocoin_gpu_has_cuda OFF)

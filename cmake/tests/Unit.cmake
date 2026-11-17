@@ -406,6 +406,7 @@ if(BUILD_QT_GUI)
         test_gui_wallet_persistence
         tests/test_gui_wallet_persistence.cpp
         src/qt/walletmodel.cpp
+        src/qt/walletsyncworker.cpp
         src/qt/guiutil.cpp
         src/qt/optionsmodel.cpp
         src/qt/transactiontablemodel.cpp
@@ -454,6 +455,7 @@ if(BUILD_QT_GUI)
         test_gui_contract
         tests/test_gui_contract.cpp
         src/qt/walletmodel.cpp
+        src/qt/walletsyncworker.cpp
         src/qt/guiutil.cpp
         src/qt/optionsmodel.cpp
         src/qt/clientmodel.cpp
@@ -516,8 +518,40 @@ if(BUILD_QT_GUI)
         TIMEOUT 180
         LABELS "wallet;gui"
     )
+
+    get_target_property(_gui_lifecycle_sources test_gui_contract SOURCES)
+    list(REMOVE_ITEM _gui_lifecycle_sources tests/test_gui_contract.cpp)
+    get_target_property(_gui_lifecycle_libraries test_gui_contract LINK_LIBRARIES)
+    add_executable(test_gui_wallet_lifecycle
+        tests/test_gui_wallet_lifecycle.cpp
+        ${_gui_lifecycle_sources}
+        src/qt/geocoinapplication.cpp
+        src/qt/geocoincore.cpp
+        src/qt/geocoingui.cpp
+        src/qt/geocoingui_layouttest.cpp
+        src/qt/walletframe.cpp
+        src/qt/networkstyle.cpp
+        src/qt/intro.cpp
+        src/qt/forktreedialog.cpp
+        src/qt/geocoin.qrc
+    )
+    set_target_properties(test_gui_wallet_lifecycle PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON)
+    target_include_directories(test_gui_wallet_lifecycle PRIVATE src/qt "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_link_libraries(test_gui_wallet_lifecycle PRIVATE ${_gui_lifecycle_libraries})
+    geocoin_stage_runtime_dependencies(test_gui_wallet_lifecycle)
+    add_test(NAME test_gui_wallet_lifecycle
+        COMMAND ${CMAKE_COMMAND} -E env
+            "QT_QPA_PLATFORM=offscreen"
+            "GEOCOIN_TEST_GPU_MINER=$<TARGET_FILE:test_gpu_miner_runtime>"
+            "GEOCOIN_TEST_LOADNET_MANIFEST=${CMAKE_CURRENT_SOURCE_DIR}/config/activation-manifest.testing-loadnet.json"
+            $<TARGET_FILE:test_gui_wallet_lifecycle>
+            "${CMAKE_BINARY_DIR}/gui-wallet-lifecycle-fixtures")
+    set_tests_properties(test_gui_wallet_lifecycle PROPERTIES
+        TIMEOUT 180
+        LABELS "wallet;gui;lifecycle;recovery"
+    )
     if(WIN32 AND GEOCOIN_WINDOWS_STATIC_RELEASE)
-        foreach(_gui_test test_gui_wallet_persistence test_gui_contract)
+        foreach(_gui_test test_gui_wallet_persistence test_gui_contract test_gui_wallet_lifecycle)
             qt5_import_plugins(${_gui_test} INCLUDE Qt5::QOffscreenIntegrationPlugin)
             target_link_libraries(${_gui_test} PRIVATE Qt5::QOffscreenIntegrationPlugin)
         endforeach()
@@ -996,6 +1030,72 @@ target_link_libraries(
 )
 geocoin_stage_runtime_dependencies(test_storage_split_metadata)
 add_test(NAME test_storage_split_metadata COMMAND test_storage_split_metadata)
+
+add_executable(test_storage_open_diagnostics tests/test_storage_open_diagnostics.cpp)
+target_link_libraries(test_storage_open_diagnostics geocoin_state geocoin_storage geocoin_wallet geocoin_core geocoin_crypto geocoin_consensus)
+geocoin_stage_runtime_dependencies(test_storage_open_diagnostics)
+add_test(NAME test_storage_open_diagnostics COMMAND test_storage_open_diagnostics)
+
+add_executable(test_cpu_topology tests/test_cpu_topology.cpp)
+target_link_libraries(test_cpu_topology geocoin_crypto geocoin_cpu)
+geocoin_stage_runtime_dependencies(test_cpu_topology)
+add_test(NAME test_cpu_topology COMMAND test_cpu_topology)
+add_test(NAME test_cpu_topology_restricted COMMAND test_cpu_topology --restricted)
+if(WIN32)
+    add_test(NAME test_cpu_topology_cpu_sets COMMAND test_cpu_topology --cpu-sets)
+endif()
+add_executable(test_cpu_rpc_miner tests/test_cpu_rpc_miner.cpp)
+target_link_libraries(test_cpu_rpc_miner geocoin_crypto geocoin_cpu)
+geocoin_stage_runtime_dependencies(test_cpu_rpc_miner)
+add_test(NAME test_cpu_rpc_miner COMMAND test_cpu_rpc_miner)
+
+add_executable(test_cpu_node_lifecycle tests/test_cpu_node_lifecycle.cpp)
+target_link_libraries(test_cpu_node_lifecycle PRIVATE geocoin_node Threads::Threads)
+target_compile_definitions(test_cpu_node_lifecycle PRIVATE GEOCOIN_ENABLE_NODE_TEST_ACCESS)
+geocoin_stage_runtime_dependencies(test_cpu_node_lifecycle)
+add_test(NAME test_cpu_node_lifecycle COMMAND test_cpu_node_lifecycle)
+set_tests_properties(test_cpu_node_lifecycle PROPERTIES TIMEOUT 20)
+if(TARGET geocoin-rpc-miner)
+    add_test(NAME test_cpu_rpc_benchmark COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cpu_rpc_benchmark.py $<TARGET_FILE:geocoin-rpc-miner> 2)
+    set_tests_properties(test_cpu_rpc_benchmark PROPERTIES TIMEOUT 20)
+endif()
+
+add_executable(test_wallet_format_migration tests/test_wallet_format_migration.cpp)
+target_link_libraries(test_wallet_format_migration geocoin_wallet geocoin_state geocoin_storage geocoin_core geocoin_crypto geocoin_consensus)
+target_compile_definitions(test_wallet_format_migration PRIVATE GEOCOIN_ENABLE_WALLET_TEST_ACCESS)
+geocoin_stage_runtime_dependencies(test_wallet_format_migration)
+add_test(NAME test_wallet_format_migration COMMAND test_wallet_format_migration)
+
+add_executable(test_gpu_miner_runtime tools/gpu_miner_tests.cpp)
+if(TARGET test_gui_wallet_lifecycle)
+    add_dependencies(test_gui_wallet_lifecycle test_gpu_miner_runtime)
+endif()
+target_link_libraries(test_gpu_miner_runtime geocoin_crypto Boost::headers)
+target_include_directories(test_gpu_miner_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+geocoin_stage_runtime_dependencies(test_gpu_miner_runtime)
+add_test(NAME test_gpu_miner_runtime COMMAND test_gpu_miner_runtime)
+add_test(NAME test_gpu_miner_io COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/gpu_miner_io_tests.py --binary $<TARGET_FILE:test_gpu_miner_runtime>)
+set_tests_properties(test_gpu_miner_io PROPERTIES TIMEOUT 90)
+
+if(TARGET geocoin-gpu-miner)
+    set(_gpu_cancel_sources ${_geocoin_gpu_sources})
+    list(REMOVE_ITEM _gpu_cancel_sources tools/gpu_miner.cpp)
+    add_executable(test_gpu_miner_backend_cancel tools/gpu_miner_backend_cancel_tests.cpp ${_gpu_cancel_sources})
+    # The generated CUDA/HIP object is owned by the production miner's build.
+    # Serialize consumers under Visual Studio rather than running nvcc twice on it.
+    add_dependencies(test_gpu_miner_backend_cancel geocoin-gpu-miner)
+    target_include_directories(test_gpu_miner_backend_cancel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools ${_geocoin_gpu_include_dirs})
+    target_compile_definitions(test_gpu_miner_backend_cancel PRIVATE ${_geocoin_gpu_defs})
+    target_link_libraries(test_gpu_miner_backend_cancel PRIVATE ${_geocoin_gpu_libs})
+    if(WIN32 AND _geocoin_gpu_has_hip)
+        target_link_options(test_gpu_miner_backend_cancel PRIVATE "/DELAYLOAD:amdhip64_7.dll" "/DELAYLOAD:amdhip64_6.dll")
+        target_link_libraries(test_gpu_miner_backend_cancel PRIVATE delayimp)
+    endif()
+    geocoin_stage_runtime_dependencies(test_gpu_miner_backend_cancel)
+    add_test(NAME test_gpu_miner_backend_cancel COMMAND test_gpu_miner_backend_cancel)
+endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_address_compat.cpp")
     add_executable(test_address_compat tests/test_address_compat.cpp)

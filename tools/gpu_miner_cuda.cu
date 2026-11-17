@@ -1096,6 +1096,12 @@ std::vector<DeviceInfo> list_cuda_devices()
         detail << (static_cast<unsigned long long>(prop.totalGlobalMem) / (1024ull * 1024ull)) << " MiB";
         info.detail = detail.str();
         info.available = true;
+        info.pci_bus_id = pci_identity(prop.pciDomainID, prop.pciBusID, prop.pciDeviceID);
+#if !defined(GEOCOIN_GPU_ENABLE_HIP) && CUDART_VERSION >= 10000
+        info.uuid = uuid_identity(reinterpret_cast<const unsigned char*>(prop.uuid.bytes));
+#elif defined(GEOCOIN_GPU_ENABLE_HIP) && HIP_VERSION_MAJOR >= 6
+        info.uuid = uuid_identity(reinterpret_cast<const unsigned char*>(prop.uuid.bytes));
+#endif
         devices.push_back(std::move(info));
     }
     return devices;
@@ -1105,6 +1111,7 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
 {
     MiningResult final_result;
     final_result.backend = GEOCOIN_GPU_BACKEND_NAME;
+    if (job_cancelled(job)) { final_result.cancelled = true; return final_result; }
 #ifdef GEOCOIN_GPU_ENABLE_HIP
     if (!hip_runtime_available()) {
 #ifdef _WIN32
@@ -1132,20 +1139,28 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
         return final_result;
     }
     const auto available_devices = list_cuda_devices();
+    std::vector<int> seen;
     for (int selected_id : selected) {
+        if (std::find(seen.begin(), seen.end(), selected_id) != seen.end()) {
+            final_result.error = "duplicate GPU device id";
+            return final_result;
+        }
+        seen.push_back(selected_id);
+        bool valid = false;
         for (const auto& device : available_devices) {
             if (device.id == selected_id) {
                 final_result.devices.push_back(device);
+                valid = true;
                 break;
             }
+        }
+        if (!valid) {
+            final_result.error = "invalid GPU device id: " + std::to_string(selected_id);
+            return final_result;
         }
     }
     final_result.device_hashes.assign(final_result.devices.size(), 0);
 
-    const uint64_t requested_per_launch = std::max<uint64_t>(1024, job.intensity);
-    const uint64_t per_launch = job.max_launch_attempts > 0
-        ? std::max<uint64_t>(1024, std::min<uint64_t>(requested_per_launch, job.max_launch_attempts))
-        : requested_per_launch;
     const uint64_t nonce_stride = static_cast<uint64_t>(selected.size());
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(job.timeout_sec);
     const CudaWork host_work = make_cuda_work(job.block_bytes, job.bits);
@@ -1165,6 +1180,7 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
             const int device_id = selected[lane];
             uint64_t lane_hashes = 0;
             try {
+                if (job_cancelled(job)) return;
                 check_cuda(cudaSetDevice(device_id), "cudaSetDevice");
                 cudaDeviceProp prop{};
                 check_cuda(cudaGetDeviceProperties(&prop, device_id), "cudaGetDeviceProperties");
@@ -1199,7 +1215,7 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
                 check_cuda(cudaMemcpy(d_nonce, &zero_nonce, sizeof(uint64_t), cudaMemcpyHostToDevice), "cudaMemcpy(nonce=0)");
 
                 const int threads = GEOCOIN_CUDA_THREADS_PER_BLOCK;
-                const uint64_t attempts_per_lane = std::max<uint64_t>(threads, per_launch);
+                LaunchSizer sizing(job);
                 const uint64_t attempts_per_block =
                     static_cast<uint64_t>(threads) * static_cast<uint64_t>(GEOCOIN_CUDA_NONCES_PER_THREAD);
 #if GEOCOIN_CUDA_PERSISTENT_GRID
@@ -1207,19 +1223,22 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
                     1,
                     static_cast<uint64_t>(std::max(1, prop.multiProcessorCount)) *
                         static_cast<uint64_t>(std::max(1, GEOCOIN_CUDA_PERSISTENT_BLOCKS_PER_SM)));
-                const uint64_t launch_attempts =
-                    ((attempts_per_lane + attempts_per_block - 1) / attempts_per_block) * attempts_per_block;
-                const uint64_t blocks = resident_blocks;
-#else
-                const uint64_t blocks = (attempts_per_lane + attempts_per_block - 1) / attempts_per_block;
-                const uint64_t launch_attempts = blocks * attempts_per_block;
 #endif
-                uint64_t chunk = 0;
+                NonceCursor nonces(job.start_nonce, lane, nonce_stride);
 
                 while (!found.load(std::memory_order_relaxed) &&
+                       !job_cancelled(job) &&
                        std::chrono::steady_clock::now() < deadline) {
-                    const uint64_t base_nonce = job.start_nonce + static_cast<uint64_t>(lane) +
-                        chunk++ * launch_attempts * nonce_stride;
+                    const uint64_t attempts_per_lane = std::max<uint64_t>(threads, sizing.attempts());
+                    const uint64_t launch_attempts =
+                        ((attempts_per_lane + attempts_per_block - 1) / attempts_per_block) * attempts_per_block;
+#if GEOCOIN_CUDA_PERSISTENT_GRID
+                    const uint64_t blocks = resident_blocks;
+#else
+                    const uint64_t blocks = launch_attempts / attempts_per_block;
+#endif
+                    const uint64_t base_nonce = nonces.take(launch_attempts);
+                    const auto launch_start = std::chrono::steady_clock::now();
                     geocoin_mine_kernel_fast<<<static_cast<unsigned int>(blocks), threads>>>(
 #if !GEOCOIN_CUDA_CONSTANT_WORK
                         d_work,
@@ -1231,13 +1250,17 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
                         d_nonce,
                         d_hash);
                     check_cuda(cudaGetLastError(), "geocoin_mine_kernel_fast");
+                    // The read synchronizes this launch before counting completed work.
+                    int host_found = 0;
+                    check_cuda(cudaMemcpy(&host_found, d_found, sizeof(int), cudaMemcpyDeviceToHost), "cudaMemcpy(found)");
+                    sizing.completed(launch_attempts, std::chrono::steady_clock::now() - launch_start);
                     lane_hashes += launch_attempts;
                     const uint64_t total_after =
                         total_hashes.fetch_add(launch_attempts, std::memory_order_relaxed) + launch_attempts;
 
                     if (job.progress_callback) {
-                        const auto now = std::chrono::steady_clock::now();
                         std::lock_guard<std::mutex> progress_lock(progress_mutex);
+                        const auto now = std::chrono::steady_clock::now();
                         if (lane < live_device_hashes.size()) {
                             live_device_hashes[lane] = lane_hashes;
                         }
@@ -1250,8 +1273,6 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
                         }
                     }
 
-                    int host_found = 0;
-                    check_cuda(cudaMemcpy(&host_found, d_found, sizeof(int), cudaMemcpyDeviceToHost), "cudaMemcpy(found)");
                     if (host_found != 0) {
                         bool expected = false;
                         if (found.compare_exchange_strong(expected, true)) {
@@ -1272,11 +1293,9 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
                 cudaFree(d_found);
                 cudaFree(d_nonce);
             } catch (const std::exception& e) {
-                bool expected = false;
-                if (found.compare_exchange_strong(expected, true)) {
-                    std::lock_guard<std::mutex> lock(result_mutex);
-                    final_result.error = e.what();
-                }
+                found.store(true, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(result_mutex);
+                final_result.error = e.what();
             }
             if (lane < final_result.device_hashes.size()) {
                 final_result.device_hashes[lane] = lane_hashes;
@@ -1289,7 +1308,9 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids)
     }
 
     final_result.hashes = total_hashes.load(std::memory_order_relaxed);
-    if (!final_result.found && final_result.error.empty()) {
+    final_result.cancelled = job_cancelled(job);
+    if (!final_result.found && !final_result.cancelled && final_result.error.empty()) {
+        final_result.timed_out = true;
         final_result.error = std::string(GEOCOIN_GPU_BACKEND_NAME) + " mining timeout after " + std::to_string(job.timeout_sec) +
             "s, hashes=" + std::to_string(final_result.hashes);
     }

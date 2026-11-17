@@ -13,13 +13,13 @@
 #include <QIcon>
 #include <QColor>
 #include <QHash>
+#include <QThread>
+#include <algorithm>
 
 TransactionTableModel::TransactionTableModel(WalletModel *parent) :
     QAbstractTableModel(parent),
     walletModel(parent)
 {
-    // Load initial transactions
-    refreshWallet();
 }
 
 TransactionTableModel::~TransactionTableModel()
@@ -42,30 +42,24 @@ int TransactionTableModel::confirmationCount(geocoin::Height blockHeight,
     return static_cast<int>(chainHeight - blockHeight + 1);
 }
 
-void TransactionTableModel::refreshWallet()
+TransactionTableModel::Snapshot TransactionTableModel::readSnapshot(
+    std::shared_ptr<geocoin::wallet::Wallet> wallet,
+    std::shared_ptr<geocoin::state::ChainState> chainState, const Snapshot& previous)
 {
-    if (!walletModel || !walletModel->getWallet()) {
-        return;
-    }
-
     QHash<QString, TransactionRecord> cachedByHash;
-    cachedByHash.reserve(transactions.size());
-    for (const auto& cached : transactions) {
+    cachedByHash.reserve(previous.size());
+    for (const auto& cached : previous) {
         cachedByHash.insert(cached.txHash, cached);
     }
 
     // ChainState нужен, чтобы восстановить адрес отправителя для входящих транзакций.
     // В UTXO-модели адрес отправителя хранится в предыдущих выходах (prevout), поэтому
     // без доступа к UTXO set мы не можем корректно заполнить колонку "Address".
-    auto chainState = walletModel->getChainState();
-
-    beginResetModel();
-    transactions.clear();
-
-    // Get transactions from wallet
-    auto wallet = walletModel->getWallet();
+    Snapshot records;
+    if (!wallet) return records;
+    const auto height = chainState ? chainState->get_height() : 0;
     auto txs = wallet->get_transactions("", 0); // All transactions
-    transactions.reserve(static_cast<qsizetype>(txs.size()));
+    records.reserve(static_cast<qsizetype>(txs.size()));
 
     for (const auto& wtx : txs) {
         TransactionRecord rec;
@@ -77,14 +71,14 @@ void TransactionTableModel::refreshWallet()
         rec.fee = wtx.fee;
         rec.confirmations = confirmationCount(
             wtx.block_height,
-            chainState ? chainState->get_height() : 0,
+            height,
             wtx.is_coinbase);
         rec.txType = wtx.tx.type;
 
         // Determine type
         if (wtx.is_coinbase) {
             rec.type = 3; // Coinbase
-            rec.address = tr("Mining Reward");
+            rec.address.clear();
             rec.addressResolved = true;
         } else if (wtx.amount > 0) {
             rec.type = 0; // Received
@@ -100,7 +94,7 @@ void TransactionTableModel::refreshWallet()
                 // input -> (prev_tx_hash, prev_vout) -> UTXO -> address.
                 // Ограничение: при множественных inputs отправителей может быть несколько.
                 // Для UI достаточно показать первый обнаруженный адрес.
-                rec.address = tr("Unknown");
+                rec.address.clear();
                 if (chainState && !wtx.tx.inputs.empty()) {
                     const auto& in0 = wtx.tx.inputs[0];
                     geocoin::state::UTXO utxo;
@@ -133,16 +127,34 @@ void TransactionTableModel::refreshWallet()
             rec.addressResolved = true;
         }
 
-        rec.status = formatTxStatus(rec);
-        transactions.append(rec);
+        records.append(rec);
     }
+    return records;
+}
 
+void TransactionTableModel::applySnapshot(Snapshot snapshot)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    for (auto& record : snapshot) {
+        if (record.type == 3) record.address = tr("Mining Reward");
+        else if (record.type == 0 && !record.addressResolved) record.address = tr("Unknown");
+        record.status = formatTxStatus(record);
+    }
+    if (snapshot.size() == transactions.size() && std::equal(snapshot.cbegin(), snapshot.cend(),
+        transactions.cbegin(), [](const TransactionRecord& left, const TransactionRecord& right) {
+            return left.txHash == right.txHash && left.dateTime == right.dateTime && left.type == right.type &&
+                left.txType == right.txType && left.address == right.address && left.amount == right.amount &&
+                left.fee == right.fee && left.confirmations == right.confirmations && left.status == right.status &&
+                left.addressResolved == right.addressResolved;
+        })) return;
+    beginResetModel();
+    transactions = std::move(snapshot);
     endResetModel();
 }
 
 void TransactionTableModel::updateTransactions()
 {
-    refreshWallet();
+    if (walletModel) walletModel->updateBalance();
 }
 
 bool TransactionTableModel::hasPendingTransactions() const

@@ -64,7 +64,8 @@ void Node::select_network_and_resolve_data_dir() {
     const std::filesystem::path base_data_dir =
         resolve_network_data_dir(config_.data_dir, consensus::Params().network_id());
     std::filesystem::create_directories(base_data_dir);
-    config_.data_dir = base_data_dir.string();
+    const auto utf8_data_dir = base_data_dir.u8string();
+    config_.data_dir.assign(utf8_data_dir.begin(), utf8_data_dir.end());
     LogPrintf("  Data dir: %s\n", config_.data_dir.c_str());
 }
 
@@ -134,19 +135,25 @@ void Node::open_storage_components(const storage::StorageOptions& storage_option
         block_backend,
         storage_options
     );
+    if (!block_storage_->is_open()) {
+        throw std::runtime_error("Failed to open block storage: " + block_storage_->last_open_error());
+    }
 
     chain_state_ = std::make_shared<state::ChainState>();
 
+    std::string storage_error;
     auto storage = state::StorageFactory::create_split(
         storage_type,
         config_.data_dir + "/chaindata/state",
         config_.data_dir + "/addresses/state",
-        storage_options
+        storage_options,
+        &storage_error
     );
     if (!storage) {
         throw std::runtime_error(
             std::string("Failed to open UTXO storage with backend ")
             + state::StorageFactory::type_name(storage_type)
+            + ": " + storage_error
         );
     }
     chain_state_->set_storage(std::move(storage));

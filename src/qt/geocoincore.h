@@ -35,12 +35,12 @@ public:
     void setConnectPeers(const QStringList& peers);
     void setNoAutoConnect(bool value);
     void setMiningSha256Backend(const QString& backend);
-    void setWalletPassword(const QString& password);
+    void setRuntimeOptions(const QString& network, quint16 p2pPort, const QString& activationManifest);
 
     // Get initialized objects (called from main thread after initialization).
     // The concrete Node remains owned by this core-thread composition root.
     geocoin::node::NodeComponentHandle getNodeComponents();
-    std::shared_ptr<geocoin::wallet::Wallet> getWallet() const { return wallet; }
+    QString getNodeDataDirectory() const { return nodeDataDirectory_; }
 
 public slots:
     void initialize();
@@ -49,17 +49,21 @@ public slots:
 signals:
     void initializeResult(bool success, const QString &error);
     void shutdownResult();
+    void shutdownFailed(const QString& error);
     void runawayException(const QString &message);
 
 private:
     QString dataDirectory;
+    QString nodeDataDirectory_;
     QStringList addNodes;
     QStringList connectPeers;
     QString miningSha256Backend = QStringLiteral("auto");
-    QString walletPassword;
+    QString network_ = QStringLiteral("degree");
+    quint16 p2pPort_ = 0;
+    QString activationManifestPath_;
     bool noAutoConnect = false;
     std::shared_ptr<geocoin::node::Node> node;
-    std::shared_ptr<geocoin::wallet::Wallet> wallet;
+    bool shutdownComplete_ = false;
 };
 
 #endif // GEOCOIN_QT_GEOCOINCORE_H

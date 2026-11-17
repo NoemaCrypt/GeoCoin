@@ -46,6 +46,7 @@ public:
     explicit RocksDBStore(BlockStoreRole role);
     ~RocksDBStore();
     bool open(const std::string& path, const StorageOptions& options);
+    const std::string& last_open_error() const { return last_open_error_; }
     bool get(const std::string& key, std::string& value) const;
     bool put(const std::string& key, const std::string& value, bool sync, bool disable_wal);
     bool delete_key(const std::string& key, bool sync, bool disable_wal);
@@ -67,6 +68,7 @@ private:
     rocksdb::Status flush_all_column_families();
 
     std::unique_ptr<rocksdb::DB> db_;
+    std::string last_open_error_;
     BlockStoreRole role_;
     std::unordered_map<std::string, rocksdb::ColumnFamilyHandle*> cf_handles_;
     std::mutex write_mutex_;

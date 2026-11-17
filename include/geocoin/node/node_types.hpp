@@ -1,6 +1,7 @@
 #pragma once
 
 #include "geocoin/types.hpp"
+#include "geocoin/node/cpu_capacity.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -10,21 +11,6 @@
 #include <vector>
 
 namespace geocoin::node {
-
-inline constexpr size_t MAX_CPU_MINING_THREADS = 256;
-
-inline size_t cpu_mining_thread_limit() {
-    const unsigned int hw_threads = std::thread::hardware_concurrency();
-    const size_t detected = hw_threads == 0 ? 1 : static_cast<size_t>(hw_threads);
-    return std::max<size_t>(1, std::min<size_t>(MAX_CPU_MINING_THREADS, detected));
-}
-
-inline size_t clamp_cpu_mining_threads(size_t threads) {
-    if (threads == 0) {
-        return 1;
-    }
-    return std::min(threads, cpu_mining_thread_limit());
-}
 
 enum class NodeType {
     FULL,
@@ -171,6 +157,10 @@ struct NodeStatus {
     uint64_t total_supply = 0;
     bool mining = false;
     size_t mining_threads = 0;
+    size_t mining_threads_requested = 0;
+    size_t mining_threads_spawned = 0;
+    size_t mining_threads_active = 0;
+    std::string mining_error;
     double hashrate = 0.0;
     uint64_t mined_blocks_accepted = 0;
 };

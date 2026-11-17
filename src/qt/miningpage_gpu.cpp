@@ -1,8 +1,15 @@
 #include "miningpage_internal.h"
+#include <QApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
+
+struct MiningPage::RpcCleanupState {
+    std::unique_ptr<geocoin::rpc::RPCServer> server;
+};
 
 bool MiningPage::isGpuMiningActive() const
 {
-    return gpuMiningEnabled ||
+    return gpuMiningEnabled || gpuStopRequested || gpuRpcStopAction.isRunning() ||
            (gpuMinerProcess && gpuMinerProcess->state() != QProcess::NotRunning);
 }
 
@@ -18,6 +25,21 @@ void MiningPage::createGpuMinerProcess()
             this, &MiningPage::gpuMinerReadyRead);
     connect(gpuMinerProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &MiningPage::gpuMinerFinished);
+    connect(gpuMinerProcess, &QProcess::started, this, [this] {
+        if (gpuStopRequested) {
+            gpuMinerProcess->write("stop\n");
+            return;
+        }
+        labelGpuStatus->setText(tr("GPU miner running"));
+        recordGpuDiagnostic(QStringLiteral("Running"));
+    });
+    connect(gpuMinerProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (!gpuMinerProcess) return;
+        gpuLastError = gpuMinerProcess->errorString();
+        recordGpuDiagnostic(QStringLiteral("Error"), gpuLastError);
+        labelGpuStatus->setText(gpuLastError);
+        if (error == QProcess::FailedToStart) finishGpuSession(-1, QProcess::NormalExit);
+    });
 }
 
 void MiningPage::resetGpuMinerProcess(bool forceStop)
@@ -28,14 +50,11 @@ void MiningPage::resetGpuMinerProcess(bool forceStop)
         return;
     }
 
-    QObject::disconnect(process, nullptr, this, nullptr);
     if (forceStop && process->state() != QProcess::NotRunning) {
-        process->terminate();
-        if (!process->waitForFinished(800)) {
-            process->kill();
-            process->waitForFinished(1800);
-        }
+        stopGpuMining();
+        return;
     }
+    QObject::disconnect(process, nullptr, this, nullptr);
     process->deleteLater();
     gpuMinerProcess = nullptr;
     createGpuMinerProcess();
@@ -260,6 +279,10 @@ bool MiningPage::startPrivateGpuRpc(QString *error)
 
 void MiningPage::stopPrivateGpuRpc()
 {
+    if (gpuRpcCleanup) {
+        if (gpuRpcCleanup->server) gpuRpcCleanup->server->stop();
+        gpuRpcCleanup.reset();
+    }
     if (gpuRpcServer) {
         gpuRpcServer->stop();
         gpuRpcServer.reset();
@@ -276,8 +299,9 @@ void MiningPage::stopPrivateGpuRpc()
 void MiningPage::setGpuMiningUi(bool running)
 {
     gpuMiningEnabled = running;
-    buttonGpuStartStop->setText(running ? tr("Stop GPU Mining") : tr("Start GPU Mining"));
-    buttonGpuStartStop->setEnabled(true);
+    buttonGpuStartStop->setText(gpuStopRequested ? tr("Stopping...") :
+                               (running ? tr("Stop GPU Mining") : tr("Start GPU Mining")));
+    buttonGpuStartStop->setEnabled(!gpuStopRequested);
     const bool hasCuda = checkGpuCuda && checkGpuCuda->property("backendAvailable").toBool();
     const bool hasHip = checkGpuHip && checkGpuHip->property("backendAvailable").toBool();
     const bool hasOpenCl = checkGpuOpenCl && checkGpuOpenCl->property("backendAvailable").toBool();
@@ -307,13 +331,15 @@ void MiningPage::processGpuStatsLine(const QByteArray& line)
     const QJsonDocument doc = QJsonDocument::fromJson(line.trimmed());
     if (!doc.isObject()) {
         if (!line.trimmed().isEmpty()) {
-            labelGpuStatus->setText(QString::fromUtf8(line.trimmed()));
+            gpuLastError = QString::fromUtf8(line.trimmed().left(1024));
+            labelGpuStatus->setText(gpuLastError);
         }
         return;
     }
     const QJsonObject obj = doc.object();
     const QString event = obj.value(QStringLiteral("event")).toString();
     if (event == QLatin1String("status")) {
+        if (gpuStopRequested) return;
         gpuHashrate = obj.value(QStringLiteral("hashrate")).toDouble(gpuHashrate);
         labelGpuHashrate->setText(GUIUtil::formatHashrate(gpuHashrate));
         labelGpuStatus->setText(tr("Mining"));
@@ -321,6 +347,7 @@ void MiningPage::processGpuStatsLine(const QByteArray& line)
         for (const QJsonValue& value : devices) {
             const QJsonObject dev = value.toObject();
             const QString backend = dev.value(QStringLiteral("backend")).toString();
+            if (backend != QLatin1String("cuda") && backend != QLatin1String("hip") && backend != QLatin1String("opencl")) continue;
             const int id = dev.value(QStringLiteral("id")).toInt(-1);
             const double hashrate = dev.value(QStringLiteral("hashrate")).toDouble(0.0);
             const int role = backend == QLatin1String("cuda")
@@ -338,6 +365,7 @@ void MiningPage::processGpuStatsLine(const QByteArray& line)
         }
         updateOverallMiningDisplay();
     } else if (event == QLatin1String("block_found")) {
+        if (gpuStopRequested) return;
         gpuHashrate = obj.value(QStringLiteral("hashrate")).toDouble(gpuHashrate);
         labelGpuHashrate->setText(GUIUtil::formatHashrate(gpuHashrate));
         labelGpuStatus->setText(tr("Block found, submitting..."));
@@ -353,7 +381,15 @@ void MiningPage::processGpuStatsLine(const QByteArray& line)
         labelGpuStatus->setText(tr("Block rejected"));
         updateOverallMiningDisplay();
     } else if (event == QLatin1String("error")) {
-        labelGpuStatus->setText(obj.value(QStringLiteral("message")).toString());
+        gpuLastError = obj.value(QStringLiteral("message")).toString().left(1024);
+        labelGpuStatus->setText(gpuLastError);
+        recordGpuDiagnostic(QStringLiteral("Error"), gpuLastError);
+    } else if (event == QLatin1String("state")) {
+        const QString state = obj.value(QStringLiteral("name")).toString();
+        const QString detail = obj.value(QStringLiteral("message")).toString().left(1024);
+        if (!gpuStopRequested) labelGpuStatus->setText(detail.isEmpty() ? state : state + QStringLiteral(": ") + detail);
+        if (state == QLatin1String("Retrying")) clearGpuRates();
+        recordGpuDiagnostic(state, detail);
     } else if (event == QLatin1String("start")) {
         labelGpuStatus->setText(tr("GPU miner started: %1").arg(
             obj.value(QStringLiteral("backend")).toString().toUpper()));
@@ -546,7 +582,7 @@ void MiningPage::gpuProbeFinished(int, QProcess::ExitStatus)
 
 void MiningPage::toggleGpuMining()
 {
-    if (gpuMiningEnabled) {
+    if (isGpuMiningActive()) {
         stopGpuMining();
         return;
     }
@@ -566,6 +602,7 @@ void MiningPage::toggleGpuMining()
     if (gpuMinerProcess && gpuMinerProcess->state() != QProcess::NotRunning) {
         labelGpuStatus->setText(tr("Stopping previous GPU miner..."));
         resetGpuMinerProcess(true);
+        return;
     }
 
     QString error;
@@ -597,46 +634,48 @@ void MiningPage::toggleGpuMining()
          << QStringLiteral("--address") << walletModel->getAddress()
          << QStringLiteral("--backend") << backend
          << QStringLiteral("--intensity") << QString::number(spinGpuIntensity->value())
-         << QStringLiteral("--blocks") << QStringLiteral("1000000")
-         << QStringLiteral("--timeout") << QStringLiteral("3600")
+         << QStringLiteral("--continuous")
+         << QStringLiteral("--control-stdin")
          << QStringLiteral("--stats-json")
          << QStringLiteral("--devices") << devices.join(QLatin1Char(','));
 
-    gpuHashrate = 0.0;
+    gpuStopRequested = false;
+    gpuLastError.clear();
+    gpuOutputBuffer.clear();
+    gpuErrorBuffer.clear();
+    gpuAcceptedBlocks = 0;
+    gpuRejectedBlocks = 0;
+    labelGpuAccepted->setText(QStringLiteral("0"));
+    labelGpuRejected->setText(QStringLiteral("0"));
+    clearGpuRates();
     labelGpuHashrate->setText(tr("0 H/s"));
     labelGpuStatus->setText(tr("Starting GPU miner..."));
     createGpuMinerProcess();
     gpuMinerProcess->setProgram(miner);
     gpuMinerProcess->setArguments(args);
-    gpuMinerProcess->start();
-    if (!gpuMinerProcess->waitForStarted(1500)) {
-        const QString reason = gpuMinerProcess->errorString();
-        stopPrivateGpuRpc();
-        setGpuMiningUi(false);
-        showStyledMessageBox(3, tr("GPU Mining"), tr("Failed to start GPU miner: %1").arg(reason));
-        return;
-    }
     setGpuMiningUi(true);
+    recordGpuDiagnostic(QStringLiteral("Starting"), backend + QStringLiteral(" devices=") + devices.join(QLatin1Char(',')));
+    gpuMinerProcess->start();
 }
 
 void MiningPage::stopGpuMining()
 {
-    const bool wasActive = isGpuMiningActive();
-    if (labelGpuStatus && wasActive) {
-        labelGpuStatus->setText(tr("Stopping GPU miner..."));
-    }
-    if (buttonGpuStartStop && wasActive) {
-        buttonGpuStartStop->setEnabled(false);
-    }
-    stopPrivateGpuRpc();
-    resetGpuMinerProcess(true);
-    gpuHashrate = 0.0;
-    if (labelGpuHashrate) {
-        labelGpuHashrate->setText(tr("0 H/s"));
-    }
-    setGpuMiningUi(false);
-    if (labelGpuStatus) {
-        labelGpuStatus->setText(tr("Not running"));
+    if (gpuSessionFinalizing && gpuCleanupFailed) { requestGpuRpcStop(); return; }
+    if (gpuStopRequested) return;
+    if (!isGpuMiningActive()) return;
+    gpuStopRequested = true;
+    gpuStopElapsed.restart();
+    gpuTerminateSent = false;
+    gpuKillSent = false;
+    labelGpuStatus->setText(tr("Stopping GPU miner..."));
+    setGpuMiningUi(true);
+    clearGpuRates();
+    recordGpuDiagnostic(QStringLiteral("Stopping"), QStringLiteral("user/shutdown request"));
+    if (gpuMinerProcess && gpuMinerProcess->state() != QProcess::NotRunning) {
+        gpuMinerProcess->write("stop\n");
+        gpuStopPollTimer->start();
+    } else {
+        finishGpuSession(0, QProcess::NormalExit);
     }
 }
 
@@ -649,48 +688,261 @@ void MiningPage::gpuMinerReadyRead()
     if (!process) {
         return;
     }
-    while (process->canReadLine()) {
-        processGpuStatsLine(process->readLine());
+    gpuOutputBuffer.append(process->readAllStandardOutput());
+    int newline = -1;
+    while ((newline = gpuOutputBuffer.indexOf('\n')) >= 0) {
+        const QByteArray line = gpuOutputBuffer.left(newline);
+        gpuOutputBuffer.remove(0, newline + 1);
+        processGpuStatsLine(line);
     }
-    const QByteArray err = process->readAllStandardError();
-    if (!err.trimmed().isEmpty()) {
-        labelGpuStatus->setText(QString::fromUtf8(err.trimmed()));
+    if (gpuOutputBuffer.size() > 65536) {
+        gpuOutputBuffer.clear();
+        gpuLastError = tr("GPU miner output exceeded the protocol limit");
+        stopGpuMining();
+    }
+    gpuErrorBuffer.append(process->readAllStandardError());
+    if (gpuErrorBuffer.size() > 4096) gpuErrorBuffer = gpuErrorBuffer.right(4096);
+    if (!gpuErrorBuffer.trimmed().isEmpty()) {
+        gpuLastError = QString::fromUtf8(gpuErrorBuffer.trimmed().right(1024));
+        if (!gpuStopRequested) labelGpuStatus->setText(gpuLastError);
     }
 }
 
 void MiningPage::gpuMinerFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
     QProcess* process = qobject_cast<QProcess*>(sender());
-    if (process) {
-        while (process->canReadLine()) {
-            processGpuStatsLine(process->readLine());
-        }
-        const QByteArray err = process->readAllStandardError();
-        if (!err.trimmed().isEmpty()) {
-            labelGpuStatus->setText(QString::fromUtf8(err.trimmed()));
-        }
-    }
     if (process && process != gpuMinerProcess) {
         process->deleteLater();
         return;
     }
-    stopPrivateGpuRpc();
-    gpuHashrate = 0.0;
-    if (labelGpuHashrate) {
-        labelGpuHashrate->setText(tr("0 H/s"));
-    }
-    setGpuMiningUi(false);
-    if (exitStatus == QProcess::CrashExit) {
-        labelGpuStatus->setText(tr("GPU miner crashed"));
-    } else if (exitCode == 0) {
-        labelGpuStatus->setText(tr("GPU miner stopped"));
-    } else {
-        labelGpuStatus->setText(tr("GPU miner stopped with exit code %1").arg(exitCode));
-    }
+    gpuMinerReadyRead();
+    if (!gpuOutputBuffer.trimmed().isEmpty()) processGpuStatsLine(gpuOutputBuffer);
+    gpuOutputBuffer.clear();
+    finishGpuSession(exitCode, exitStatus);
+}
+
+void MiningPage::finishGpuSession(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    if (gpuSessionFinalizing) return;
+    gpuSessionFinalizing = true;
+    const bool requested = gpuStopRequested;
+    gpuStopRequested = true;
+    clearGpuRates();
+    const QString result = exitStatus == QProcess::CrashExit && !requested
+        ? tr("GPU miner crashed")
+        : (exitCode == 0 || requested ? tr("GPU miner stopped")
+                                     : tr("GPU miner stopped with exit code %1").arg(exitCode));
+    labelGpuStatus->setText(gpuLastError.isEmpty() ? result : result + QStringLiteral(": ") + gpuLastError);
+    recordGpuDiagnostic(requested || exitCode == 0 ? QStringLiteral("Stopped") : QStringLiteral("Error"),
+                        QStringLiteral("exit=%1 crash=%2 ").arg(exitCode).arg(exitStatus == QProcess::CrashExit) + gpuLastError);
     if (gpuMinerProcess) {
         QObject::disconnect(gpuMinerProcess, nullptr, this, nullptr);
         gpuMinerProcess->deleteLater();
         gpuMinerProcess = nullptr;
     }
-    createGpuMinerProcess();
+    if (gpuRpcServer) {
+        gpuRpcCleanup = std::make_shared<RpcCleanupState>();
+        gpuRpcCleanup->server = std::move(gpuRpcServer);
+    }
+    requestGpuRpcStop();
+}
+
+void MiningPage::requestGpuRpcStop()
+{
+    if (gpuRpcStopAction.isRunning()) return;
+    gpuCleanupFailed = false;
+    if (gpuRpcCleanup && gpuRpcCleanup->server) {
+        const bool diagnostic = qApp && !qApp->property("geocoinTestDataDirectory").toString().isEmpty();
+        const int creationFailures = diagnostic ? property("geocoinTestRpcWorkerStartFailures").toInt() : 0;
+        if (creationFailures > 0) {
+            setProperty("geocoinTestRpcWorkerStartFailures", creationFailures - 1);
+            reportGpuCleanupFailure(tr("GPU RPC cleanup worker could not start [rpc_cleanup_start_failed]. Listener ownership is retained; retry Stop."));
+            return;
+        }
+        const int stopFailures = diagnostic ? property("geocoinTestRpcStopFailures").toInt() : 0;
+        if (stopFailures > 0) setProperty("geocoinTestRpcStopFailures", stopFailures - 1);
+        const auto cleanup = gpuRpcCleanup;
+        if (!gpuRpcStopAction.start([cleanup, stopFailures] {
+            if (stopFailures > 0) throw std::runtime_error("synthetic RPC stop failure");
+            cleanup->server->stop();
+            cleanup->server.reset();
+        })) {
+            reportGpuCleanupFailure(tr("GPU RPC cleanup worker could not start [rpc_cleanup_start_failed]. Listener ownership is retained; retry Stop."));
+            return;
+        }
+    }
+    gpuStopPollTimer->start();
+}
+
+void MiningPage::reportGpuCleanupFailure(const QString& error)
+{
+    gpuCleanupFailed = true;
+    gpuStopPollTimer->stop();
+    gpuLastError = error;
+    labelGpuStatus->setText(error);
+    recordGpuDiagnostic(QStringLiteral("CleanupError"), error);
+    if (!gpuCleanupErrorDialog) {
+        gpuCleanupErrorDialog = new QMessageBox(QMessageBox::Critical, tr("GPU Cleanup Failed"), error, QMessageBox::Retry);
+        gpuCleanupErrorDialog->setTextFormat(Qt::PlainText);
+        gpuCleanupErrorDialog->setWindowModality(Qt::NonModal);
+        gpuCleanupErrorDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(gpuCleanupErrorDialog, &QMessageBox::finished, this, [this](int) {
+            gpuCleanupErrorDialog = nullptr;
+            if (gpuCleanupFailed) QTimer::singleShot(0, this, &MiningPage::requestGpuRpcStop);
+        });
+        gpuCleanupErrorDialog->show();
+    } else {
+        gpuCleanupErrorDialog->setText(error);
+    }
+    emit gpuCleanupError(error);
+}
+
+void MiningPage::pollGpuStop()
+{
+    if (gpuSessionFinalizing) {
+        if (gpuCleanupFailed) return;
+        if (!gpuRpcStopAction.reapIfFinished()) return;
+        if (gpuRpcStopAction.failed()) {
+            reportGpuCleanupFailure(tr("GPU RPC cleanup failed [rpc_cleanup_failed]. Listener ownership is retained; retry Stop."));
+            return;
+        }
+        stopPrivateGpuRpc();
+        gpuStopPollTimer->stop();
+        gpuStopRequested = false;
+        gpuSessionFinalizing = false;
+        if (gpuCleanupErrorDialog) gpuCleanupErrorDialog->close();
+        setGpuMiningUi(false);
+        createGpuMinerProcess();
+        emit gpuMiningStopped();
+        return;
+    }
+    if (!gpuStopRequested) {
+        gpuStopPollTimer->stop();
+        return;
+    }
+    const qint64 elapsed = gpuStopElapsed.elapsed();
+    if (!gpuMinerProcess || gpuMinerProcess->state() == QProcess::NotRunning) {
+        finishGpuSession(0, QProcess::NormalExit);
+    } else if (elapsed >= 4000 && !gpuKillSent) {
+        gpuKillSent = true;
+        recordGpuDiagnostic(QStringLiteral("Stopping"), QStringLiteral("termination timeout; killing owned child"));
+        gpuMinerProcess->kill();
+    } else if (elapsed >= 3000 && !gpuTerminateSent && !gpuKillSent) {
+        gpuTerminateSent = true;
+        recordGpuDiagnostic(QStringLiteral("Stopping"), QStringLiteral("cooperative timeout; terminating owned child"));
+        gpuMinerProcess->terminate();
+    }
+}
+
+void MiningPage::clearGpuRates()
+{
+    gpuHashrate = 0.0;
+    if (labelGpuHashrate) labelGpuHashrate->setText(tr("0 H/s"));
+    if (listGpuDevices) {
+        for (int i = 0; i < listGpuDevices->count(); ++i) {
+            auto* item = listGpuDevices->item(i);
+            if (item->data(RoleBaseText).isValid()) item->setText(item->data(RoleBaseText).toString());
+        }
+    }
+    updateOverallMiningDisplay();
+}
+
+void MiningPage::recordGpuDiagnostic(const QString& event, const QString& detail)
+{
+    const QString directory = QDir(GUIUtil::applicationDataPath())
+        .filePath(QStringLiteral("diagnostics"));
+    if (!QDir().mkpath(directory)) return;
+    const QString path = QDir(directory).filePath(QStringLiteral("mining.log"));
+    QFile file(path);
+    if (file.size() > 128 * 1024) {
+        QFile::remove(path + QStringLiteral(".1"));
+        if (!file.rename(path + QStringLiteral(".1"))) return;
+        file.setFileName(path);
+    }
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) return;
+    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    QString safe = detail.left(1024);
+    safe.replace(QRegularExpression(QStringLiteral("[\\r\\n\\t]")), QStringLiteral(" "));
+    safe.replace(QRegularExpression(QStringLiteral("https?://[^ /]*@")), QStringLiteral("http://[redacted]@"));
+    if (safe.contains(QRegularExpression(QStringLiteral("password|passphrase|private.?key|secret|seed|mnemonic"),
+                                        QRegularExpression::CaseInsensitiveOption))) safe = QStringLiteral("[sensitive diagnostic omitted]");
+    file.write((QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + QLatin1Char(' ') +
+                selectedGpuBackend() + QLatin1Char(' ') + event.left(32) + QLatin1Char(' ') + safe + QLatin1Char('\n')).toUtf8());
+}
+
+bool MiningPage::runProcessLifecycleChecks(const QString& fixture, QString* error)
+{
+    if (!qApp || qApp->property("geocoinTestDataDirectory").toString().isEmpty() ||
+        isGpuMiningActive() || miningEnabled || !QFile::exists(fixture)) {
+        if (error) *error = QStringLiteral("GPU process checks require an isolated, idle diagnostic session");
+        return false;
+    }
+    for (const QString& mode : {QStringLiteral("--stdin-fixture"), QStringLiteral("--stdin-fixture"),
+                               QStringLiteral("--hang-fixture"), QStringLiteral("--crash-fixture"),
+                               QStringLiteral("--failed-start"), QStringLiteral("--rpc-worker-failure"),
+                               QStringLiteral("--rpc-stop-failure")}) {
+        // Exercise the actual listener's owning lifetime, not just the child fixture.
+        gpuRpcServer = std::make_unique<geocoin::rpc::RPCServer>(geocoin::rpc::RPCCommandProfile::MINING_ONLY);
+        if (!gpuRpcServer->start("127.0.0.1", 0, "diagnostic-admin", "synthetic-diagnostic-password")) {
+            gpuRpcServer.reset();
+            if (error) *error = QStringLiteral("Cannot start isolated loopback RPC fixture");
+            return false;
+        }
+        QEventLoop loop;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        int heartbeats = 0;
+        bool timedOut = false;
+        bool complete = false;
+        int cleanupErrors = 0;
+        bool retainedListener = false;
+        const bool injectedCleanupFailure = mode.startsWith(QStringLiteral("--rpc-"));
+        setProperty("geocoinTestRpcWorkerStartFailures", mode == QLatin1String("--rpc-worker-failure") ? 1 : 0);
+        setProperty("geocoinTestRpcStopFailures", mode == QLatin1String("--rpc-stop-failure") ? 1 : 0);
+        QTimer heartbeat;
+        heartbeat.setInterval(10);
+        connect(&heartbeat, &QTimer::timeout, &loop, [&] { ++heartbeats; });
+        QTimer watchdog;
+        watchdog.setSingleShot(true);
+        connect(&watchdog, &QTimer::timeout, &loop, [&] {
+            timedOut = true;
+            if (gpuMinerProcess && gpuMinerProcess->state() != QProcess::NotRunning) gpuMinerProcess->kill();
+            loop.quit();
+        });
+        connect(this, &MiningPage::gpuMiningStopped, &loop, [&] { complete = true; loop.quit(); });
+        connect(this, &MiningPage::gpuCleanupError, &loop, [&](const QString&) {
+            ++cleanupErrors;
+            retainedListener = isGpuMiningActive() && gpuRpcCleanup && gpuRpcCleanup->server &&
+                gpuRpcCleanup->server->is_running();
+            QTimer::singleShot(150, &loop, [this] { stopGpuMining(); });
+        });
+        gpuLastError.clear();
+        gpuOutputBuffer.clear();
+        gpuErrorBuffer.clear();
+        gpuStopRequested = false;
+        createGpuMinerProcess();
+        setGpuMiningUi(true);
+        gpuMinerProcess->setProgram(mode == QLatin1String("--failed-start") ? fixture + QStringLiteral(".missing") : fixture);
+        gpuMinerProcess->setArguments({injectedCleanupFailure ? QStringLiteral("--stdin-fixture") : mode});
+        gpuMinerProcess->start();
+        if (mode == QLatin1String("--stdin-fixture") || mode == QLatin1String("--hang-fixture") || injectedCleanupFailure) {
+            QTimer::singleShot(250, &loop, [this] { stopGpuMining(); stopGpuMining(); });
+        }
+        heartbeat.start();
+        watchdog.start(6000);
+        loop.exec();
+        if (timedOut || !complete || isGpuMiningActive() || elapsed.elapsed() >= 5000 ||
+            (injectedCleanupFailure && (cleanupErrors != 1 || !retainedListener || heartbeats < 25)) ||
+            (mode == QLatin1String("--hang-fixture") && heartbeats < 200) ||
+            (mode == QLatin1String("--crash-fixture") && !gpuLastError.contains(QStringLiteral("offline fixture crash")))) {
+            if (gpuMinerProcess && gpuMinerProcess->state() != QProcess::NotRunning) {
+                gpuMinerProcess->kill();
+                gpuMinerProcess->waitForFinished(1000);
+            }
+            if (error) *error = QStringLiteral("GPU lifecycle case %1 failed (ms=%2 heartbeat=%3 complete=%4 error=%5)")
+                .arg(mode).arg(elapsed.elapsed()).arg(heartbeats).arg(complete).arg(gpuLastError);
+            return false;
+        }
+    }
+    return true;
 }

@@ -79,7 +79,7 @@ int main() {
         expect_true(parsed_user == "user" && parsed_pass == "pass",
             "valid Basic Auth payload should split user and password");
         expect_true(
-            geocoin::node::clamp_cpu_mining_threads(geocoin::node::MAX_CPU_MINING_THREADS + 1024) <=
+            geocoin::node::clamp_cpu_mining_threads(geocoin::node::cpu_mining_thread_limit() + 1024) <=
                 geocoin::node::cpu_mining_thread_limit(),
             "CPU mining thread clamp must enforce the safe thread limit"
         );

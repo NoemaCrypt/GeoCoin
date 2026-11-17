@@ -1,4 +1,8 @@
 # Core library
+add_library(geocoin_cpu STATIC src/geocoin/node/cpu_capacity.cpp)
+target_include_directories(geocoin_cpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(geocoin_cpu PUBLIC Threads::Threads)
+
 add_library(geocoin_core STATIC
     src/geocoin/core/transaction.cpp
     src/geocoin/core/transaction_ser.cpp
@@ -298,6 +302,7 @@ function(geocoin_configure_library_target target_name)
 endfunction()
 
 foreach(_geocoin_library_target
+        geocoin_cpu
         geocoin_core
         geocoin_crypto
         geocoin_chain
@@ -365,7 +370,7 @@ foreach(_oqs_obj
         target_sources(geocoin_crypto PRIVATE $<TARGET_OBJECTS:${_oqs_obj}>)
     endif()
 endforeach()
-target_link_libraries(geocoin_core PUBLIC geocoin_crypto)
+target_link_libraries(geocoin_core PUBLIC geocoin_crypto geocoin_cpu)
 target_link_libraries(geocoin_core PRIVATE GeographicLib::GeographicLib)
 target_link_libraries(geocoin_core PRIVATE Boost::headers)
 geocoin_strict_geodesy(geocoin_core)

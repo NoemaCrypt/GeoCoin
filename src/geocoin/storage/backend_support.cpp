@@ -41,29 +41,38 @@ std::string format_identity(const StorageOptions& options) {
 }
 
 bool ensure_format(rocksdb::DB* db, const StorageOptions& options,
-                   const std::vector<rocksdb::ColumnFamilyHandle*>& families) {
+                   const std::vector<rocksdb::ColumnFamilyHandle*>& families,
+                   std::string* error) {
+    if (error) error->clear();
     const auto expected = format_identity(options);
     std::string actual;
     auto status = db->Get(rocksdb::ReadOptions(), kFormatKey, &actual);
     if (status.ok()) {
         if (actual == expected) return true;
+        if (error) *error = "Storage format, network or genesis mismatch";
         GEO_LOG_ERROR("storage", "Storage format, network or genesis mismatch");
         return false;
     }
-    if (!status.IsNotFound()) return false;
+    if (!status.IsNotFound()) {
+        if (error) *error = status.ToString();
+        return false;
+    }
     auto handles = families;
     if (handles.empty()) handles.push_back(db->DefaultColumnFamily());
     for (auto* cf : handles) {
         std::unique_ptr<rocksdb::Iterator> it(db->NewIterator(rocksdb::ReadOptions(), cf));
         it->SeekToFirst();
         if (it->Valid() || !it->status().ok()) {
+            if (error) *error = it->status().ok() ? "Existing database has no supported format identifier" : it->status().ToString();
             GEO_LOG_ERROR("storage", "Existing database has no supported format identifier; use a fresh data directory");
             return false;
         }
     }
     rocksdb::WriteOptions write;
     write.sync = true;
-    return db->Put(write, kFormatKey, expected).ok();
+    status = db->Put(write, kFormatKey, expected);
+    if (!status.ok() && error) *error = status.ToString();
+    return status.ok();
 }
 
 bool ensure_backend_marker(const std::string& path, const char* backend, const char* label) {

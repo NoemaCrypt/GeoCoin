@@ -1,6 +1,7 @@
 #pragma once
 
 #include "geocoin/utils/logger.hpp"
+#include "geocoin/utils/filesystem.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -50,18 +51,19 @@ inline void apply_block_cache_options(rocksdb::Options& options, size_t cache_mb
 }
 
 inline std::filesystem::path backend_marker_path(const std::string& db_path) {
-    return std::filesystem::path(db_path).replace_extension(".backend");
+    return utils::path_from_utf8(db_path).replace_extension(".backend");
 }
 
 inline bool directory_has_data(const std::string& db_path) {
     std::error_code ec;
-    if (!std::filesystem::exists(db_path, ec)) {
+    const auto path = utils::path_from_utf8(db_path);
+    if (!std::filesystem::exists(path, ec)) {
         return false;
     }
-    if (!std::filesystem::is_directory(db_path, ec)) {
+    if (!std::filesystem::is_directory(path, ec)) {
         return true;
     }
-    return !std::filesystem::is_empty(db_path, ec);
+    return !std::filesystem::is_empty(path, ec);
 }
 
 inline bool ensure_backend_marker(
@@ -109,10 +111,10 @@ inline rocksdb::Status open_rocksdb(
     std::unique_ptr<rocksdb::DB>& db
 ) {
 #if defined(ROCKSDB_MAJOR) && ROCKSDB_MAJOR >= 11
-    return rocksdb::DB::Open(options, path, &db);
+    return rocksdb::DB::Open(options, utils::path_to_utf8(utils::path_from_utf8(path)), &db);
 #else
     rocksdb::DB* db_raw = nullptr;
-    rocksdb::Status status = rocksdb::DB::Open(options, path, &db_raw);
+    rocksdb::Status status = rocksdb::DB::Open(options, utils::path_to_utf8(utils::path_from_utf8(path)), &db_raw);
     if (status.ok()) {
         db.reset(db_raw);
     }
@@ -128,10 +130,10 @@ inline rocksdb::Status open_rocksdb_with_column_families(
     std::unique_ptr<rocksdb::DB>& db
 ) {
 #if defined(ROCKSDB_MAJOR) && ROCKSDB_MAJOR >= 11
-    return rocksdb::DB::Open(options, path, column_families, handles, &db);
+    return rocksdb::DB::Open(options, utils::path_to_utf8(utils::path_from_utf8(path)), column_families, handles, &db);
 #else
     rocksdb::DB* db_raw = nullptr;
-    rocksdb::Status status = rocksdb::DB::Open(options, path, column_families, handles, &db_raw);
+    rocksdb::Status status = rocksdb::DB::Open(options, utils::path_to_utf8(utils::path_from_utf8(path)), column_families, handles, &db_raw);
     if (status.ok()) {
         db.reset(db_raw);
     }

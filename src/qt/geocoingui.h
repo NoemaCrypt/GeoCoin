@@ -8,6 +8,8 @@
 #include <QMainWindow>
 #include <QLabel>
 #include <QProgressBar>
+#include <functional>
+#include "managedasyncaction.h"
 
 class ClientModel;
 class WalletModel;
@@ -18,6 +20,8 @@ QT_BEGIN_NAMESPACE
 class QAction;
 class QMenu;
 class QLineEdit;
+class QToolButton;
+class QFrame;
 QT_END_NAMESPACE
 
 /**
@@ -50,6 +54,9 @@ public:
 
     /** Join an in-flight CPU mining stop before core/node destruction. */
     void waitForPendingMiningStop();
+    void beginShutdown();
+    bool minersStopped();
+    void openWalletPath(const QString& filename, const QString& password = QString());
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -68,6 +75,13 @@ private:
     QString lastVisitedPage_;
     QString titleAddText_;
     QString lastWalletHistoryError_;
+    bool closing_ = false;
+    bool walletTransition_ = false;
+    bool walletTransitionFinalizing_ = false;
+    ManagedAsyncAction walletMiningStop_;
+    void finishWalletTransition(bool closeOnly);
+    void startWalletTransition(bool closeOnly);
+    void showWalletOperationError(const QString& title);
     bool statusCpuMiningEnabled = false;
     int statusCpuMiningThreads = 0;
     double statusCpuHashrate = 0.0;
@@ -86,6 +100,8 @@ private:
     QProgressBar *progressBar = nullptr;
     QLabel *progressBarLabel = nullptr;
     QLabel *labelHashrateStatus = nullptr;
+    QToolButton *themeToggleButton = nullptr;
+    QFrame *clientAreaFrame_ = nullptr;
 
     // Menu bar
     QMenu *fileMenu;

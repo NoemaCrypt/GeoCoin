@@ -36,6 +36,9 @@ public:
     int getMiningThreads() const;
     double getHashrate() const;
     quint64 getMinedBlocksAccepted() const;
+    geocoin::node::NodeStatus getCachedStatus() const { return status_; }
+    QString getMiningDiagnostics() const { return miningDiagnostics_; }
+    void updateStatus(const geocoin::node::NodeStatus& status);
 
     std::shared_ptr<geocoin::node::MiningControlService> getMiningControl() const;
     geocoin::node::NodeComponentHandle getNodeComponents() const;
@@ -45,6 +48,9 @@ public:
 private:
     OptionsModel *optionsModel;
     geocoin::node::NodeComponentHandle nodeComponents_;
+    geocoin::node::NodeStatus status_{};
+    QString miningDiagnostics_;
+    QString lastMiningError_;
 
     int cachedNumBlocks;
     int cachedNumConnections = -1;
@@ -58,6 +64,7 @@ signals:
     void numBlocksChanged(int count);
     void miningChanged(bool enabled, int threads, double hashrate, quint64 minedBlocksAccepted);
     void message(const QString &title, const QString &message, unsigned int style);
+    void miningDiagnosticsChanged(const QString& diagnostics);
 
 public slots:
     void updateNumConnections(int numConnections);

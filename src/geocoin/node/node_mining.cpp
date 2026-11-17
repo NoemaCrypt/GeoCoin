@@ -6,6 +6,7 @@
 #include "geocoin/consensus/optimized_miner.hpp"
 #include "geocoin/core/merkle.hpp"
 #include "geocoin/node/node_runtime.hpp"
+#include "geocoin/node/cpu_workers.hpp"
 #include "geocoin/node/node_status_utils.hpp"
 #include "geocoin/utils/logger.hpp"
 #include "geocoin/utils/logging.hpp"
@@ -22,56 +23,9 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 using geocoin::utils::LogPrintf;
 
 namespace geocoin::node {
-namespace {
-
-void configure_mining_thread_scheduling(int thread_id) {
-#ifdef _WIN32
-    // Windows splits large CPUs into processor groups. Distribute mining
-    // workers across groups so machines with 128/192+ logical CPUs are used.
-    const WORD group_count = GetActiveProcessorGroupCount();
-    if (group_count > 1) {
-        std::vector<WORD> groups;
-        groups.reserve(group_count);
-        for (WORD group = 0; group < group_count; ++group) {
-            if (GetActiveProcessorCount(group) > 0) {
-                groups.push_back(group);
-            }
-        }
-
-        if (!groups.empty()) {
-            const size_t group_index = static_cast<size_t>(thread_id) % groups.size();
-            const WORD group = groups[group_index];
-            const DWORD processors = GetActiveProcessorCount(group);
-            if (processors > 0) {
-                const DWORD cpu_index = static_cast<DWORD>(
-                    (static_cast<size_t>(thread_id) / groups.size()) % processors
-                );
-                if (cpu_index < sizeof(KAFFINITY) * 8) {
-                    GROUP_AFFINITY affinity{};
-                    affinity.Group = group;
-                    affinity.Mask = static_cast<KAFFINITY>(1) << cpu_index;
-                    (void)SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr);
-                }
-            }
-        }
-    }
-
-    // Below-normal keeps the GUI responsive without the severe throttling of
-    // THREAD_MODE_BACKGROUND_BEGIN, which hurts miner hashrate on Windows.
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-#else
-    (void)thread_id;
-#endif
-}
-
-}  // namespace
 
 bool Node::start_mining() {
     std::lock_guard<std::mutex> lock(mining_control_mutex_);
@@ -84,18 +38,40 @@ bool Node::start_mining_unlocked() {
         return false;
     }
 
+    // A failed session can leave joinable workers still reading config_. Reap
+    // them before clamping or otherwise changing the next session's settings.
+    join_cpu_workers(mining_threads_);
+    mining_threads_requested_ = config_.mining_threads;
+    mining_threads_spawned_ = 0;
+    mining_threads_active_.store(0, std::memory_order_release);
+    const auto start_failure = [this](const std::string& error) {
+        std::lock_guard lock(mining_stats_mutex_);
+        mining_error_ = error;
+    };
+    start_failure({});
+
     if (config_.mining_address.empty()) {
+        start_failure("Mining address not set");
         LogPrintf("Mining address not set\n");
         GEO_METRIC_INC("node.mining_start_fail_total", 1);
         return false;
     }
 
     if (config_.mining_threads == 0) {
+        start_failure("Mining thread count must be greater than zero");
         LogPrintf("Mining thread count must be greater than zero\n");
         GEO_METRIC_INC("node.mining_start_fail_total", 1);
         return false;
     }
-    const size_t safe_thread_limit = cpu_mining_thread_limit();
+    const auto topology = cpu_mining_topology();
+    if (!topology.error.empty() || topology.capacity() == 0) {
+        start_failure("Cannot discover allowed CPU topology: " + topology.error);
+        GEO_LOG_ERROR("mining", "Cannot discover allowed CPU topology: " << topology.error);
+        GEO_METRIC_INC("node.mining_start_fail_total", 1);
+        return false;
+    }
+    const size_t requested_threads = config_.mining_threads;
+    const size_t safe_thread_limit = topology.capacity();
     if (config_.mining_threads > safe_thread_limit) {
         LogPrintf(
             "Mining thread count %zu exceeds safe limit %zu; clamping\n",
@@ -115,6 +91,7 @@ bool Node::start_mining_unlocked() {
     }
 
     if (sync_discovery_active || detail::is_height_behind(local_height, sync_target_height)) {
+        start_failure("Mining blocked until validated chain sync completes");
         LogPrintf(
             "Mining blocked: local height %llu is behind sync target height %llu\n",
             static_cast<unsigned long long>(local_height),
@@ -140,18 +117,6 @@ bool Node::start_mining_unlocked() {
         config_.mining_threads,
         consensus::get_mining_sha256_backend().c_str());
 
-    // Workers from an earlier session that ended on their own (a worker
-    // exception or a background runtime failure clears mining_ without
-    // joining) stay joinable until stop_mining() runs. mining_ is false here,
-    // so they are exiting; reap them before starting new ones so the vector
-    // and the reported thread count only describe the new session.
-    for (auto& thread : mining_threads_) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-    mining_threads_.clear();
-
     mining_ = true;
     GEO_METRIC_SET("node.mining", 1);
     GEO_METRIC_INC("node.mining_start_total", 1);
@@ -164,50 +129,43 @@ bool Node::start_mining_unlocked() {
         mining_last_hashrate_time_ = mining_start_time_;
     }
 
-    // Thread construction can fail after a subset has started. Roll the
-    // subset back synchronously so no joinable worker escapes this method.
-    try {
-        mining_threads_.reserve(config_.mining_threads);
-        for (size_t i = 0; i < config_.mining_threads; i++) {
-            mining_threads_.emplace_back([this, i]() {
-                try {
-                    mining_thread(static_cast<int>(i));
-                } catch (const std::exception& error) {
-                    GEO_LOG_ERROR("mining", "Mining worker terminated: " << error.what());
-                    mining_.store(false, std::memory_order_release);
-                } catch (...) {
-                    GEO_LOG_ERROR("mining", "Mining worker terminated with a non-standard exception");
-                    mining_.store(false, std::memory_order_release);
-                }
-            });
-        }
-    } catch (const std::exception& error) {
-        GEO_LOG_ERROR("mining", "Failed to start mining workers: " << error.what());
-        mining_.store(false, std::memory_order_release);
-        for (auto& thread : mining_threads_) {
-            if (thread.joinable()) {
-                thread.join();
+    const auto started = start_cpu_workers(mining_threads_, mining_, config_.mining_threads, topology,
+        [this](size_t id) {
+            mining_threads_active_.fetch_add(1, std::memory_order_acq_rel);
+            try {
+                mining_thread(static_cast<int>(id));
+            } catch (...) {
+                mining_threads_active_.fetch_sub(1, std::memory_order_acq_rel);
+                throw;
             }
-        }
-        mining_threads_.clear();
-        GEO_METRIC_SET("node.mining", 0);
-        GEO_METRIC_INC("node.mining_start_fail_total", 1);
-        return false;
-    } catch (...) {
-        GEO_LOG_ERROR("mining", "Failed to start mining workers");
-        mining_.store(false, std::memory_order_release);
-        for (auto& thread : mining_threads_) {
-            if (thread.joinable()) {
-                thread.join();
-            }
-        }
-        mining_threads_.clear();
+            mining_threads_active_.fetch_sub(1, std::memory_order_acq_rel);
+        },
+        [this](size_t id, const std::string& error) { record_cpu_mining_failure(id, error); });
+    mining_threads_spawned_ = started.spawned;
+    GEO_METRIC_SET("node.mining_threads_requested", static_cast<int64_t>(requested_threads));
+    GEO_METRIC_SET("node.mining_threads_spawned", static_cast<int64_t>(started.spawned));
+    LogPrintf("CPU mining workers: requested=%zu, allowed=%zu, spawned=%zu, active=%zu\n",
+        requested_threads, safe_thread_limit, started.spawned,
+        started.ok() && mining_.load(std::memory_order_acquire) ? mining_threads_.size() : size_t{0});
+    if (!started.ok()) {
+        start_failure("CPU worker startup failed: " + started.error);
+        GEO_LOG_ERROR("mining", "Failed to start CPU mining workers: " << started.error);
         GEO_METRIC_SET("node.mining", 0);
         GEO_METRIC_INC("node.mining_start_fail_total", 1);
         return false;
     }
 
     return true;
+}
+
+void Node::record_cpu_mining_failure(size_t worker, const std::string& error) {
+    {
+        std::lock_guard lock(mining_stats_mutex_);
+        if (mining_error_.empty()) mining_error_ = "CPU worker " + std::to_string(worker) + " failed: " + error;
+    }
+    GEO_LOG_ERROR("mining", "CPU mining worker " << worker << " failed: " << error);
+    GEO_METRIC_INC("node.mining_worker_fail_total", 1);
+    GEO_METRIC_SET("node.mining", 0);
 }
 
 bool Node::start_mining(size_t threads, const Address& mining_address) {
@@ -218,8 +176,10 @@ bool Node::start_mining(size_t threads, const Address& mining_address) {
         return false;
     }
 
+    join_cpu_workers(mining_threads_);
+
     // Обновляем конфиг
-    config_.mining_threads = clamp_cpu_mining_threads(threads);
+    config_.mining_threads = std::max<size_t>(1, threads);
     config_.mining_address = mining_address;
     config_.enable_mining = true;
 
@@ -240,12 +200,7 @@ void Node::stop_mining() {
     GEO_METRIC_INC("node.mining_stop_total", 1);
 
     // Ждем завершения потоков
-    for (auto& thread : mining_threads_) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-    mining_threads_.clear();
+    join_cpu_workers(mining_threads_);
 
     LogPrintf("Mining stopped (total hashes: %llu)\n",
               static_cast<unsigned long long>(total_hashes_.load(std::memory_order_relaxed)));
@@ -257,8 +212,6 @@ void Node::stop_mining() {
 }
 
 void Node::mining_thread(int thread_id) {
-    configure_mining_thread_scheduling(thread_id);
-
     {
         std::lock_guard<std::mutex> lock(mining_output_mutex_);
         if (detail::sync_debug_enabled()) {
@@ -321,7 +274,7 @@ void Node::mining_thread(int thread_id) {
 
         if (!found && mining_) {
             if (config_.mining_cooperative_pause_us > 0) {
-                std::this_thread::sleep_for(std::chrono::microseconds(config_.mining_cooperative_pause_us));
+                pause_cpu_mining_worker(mining_, std::chrono::microseconds(config_.mining_cooperative_pause_us));
             } else {
                 std::this_thread::yield();
             }

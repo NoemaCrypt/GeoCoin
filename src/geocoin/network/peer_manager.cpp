@@ -362,7 +362,8 @@ bool PeerManager::add_outbound_peer(
         GEO_METRIC_INC("peers.connect_outbound_fail_total", 1);
         return false;
     }
-    record_outbound_result_unlocked(address, true, manual_target, "connected");
+    // TCP alone is not success: retain retry history and the in-flight guard
+    // until the encrypted mutual authentication admits this peer as READY.
     GEO_METRIC_INC("peers.connect_outbound_ok_total", 1);
     GEO_LOG_DEBUG("peers", "Outbound TCP connected: " << address
         << " in " << elapsed_ms << " ms");

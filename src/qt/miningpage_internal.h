@@ -40,6 +40,8 @@
 #include <QTimer>
 #include <QUuid>
 #include <QVector>
+#include <QDateTime>
+#include <QRegularExpression>
 #include <algorithm>
 
 namespace {
@@ -91,26 +93,11 @@ QString vendorFamily(const QJsonObject& primary, const QJsonObject& fallback);
 
 bool samePhysicalGpuModel(const QJsonObject& backendDevice, const QJsonObject& openClDevice)
 {
-    const QString cudaName = normalizedGpuName(backendDevice.value(QStringLiteral("name")).toString());
-    const QString openClName = normalizedGpuName(openClDevice.value(QStringLiteral("name")).toString());
-    if (cudaName.isEmpty() || openClName.isEmpty()) {
-        return false;
-    }
-    if (cudaName == openClName || cudaName.contains(openClName) || openClName.contains(cudaName)) {
-        return true;
-    }
-
-    const QString backendDetail = normalizedGpuName(backendDevice.value(QStringLiteral("detail")).toString());
-    const QString openClDetail = normalizedGpuName(openClDevice.value(QStringLiteral("detail")).toString());
-    const QString backendVendor = vendorFamily(backendDevice, QJsonObject());
-    const QString openClVendor = vendorFamily(openClDevice, QJsonObject());
-    if (!backendVendor.isEmpty() && backendVendor == openClVendor) {
-        if (!backendDetail.isEmpty() && (backendDetail.contains(openClName) || openClName.contains(backendDetail))) {
-            return true;
-        }
-        if (!openClDetail.isEmpty() && (openClDetail.contains(cudaName) || cudaName.contains(openClDetail))) {
-            return true;
-        }
+    // Identical model names do not identify a physical card or its backend ordinal.
+    for (const QString& key : {QStringLiteral("uuid"), QStringLiteral("pci_bus_id")}) {
+        const QString first = backendDevice.value(key).toString().trimmed().toLower();
+        const QString second = openClDevice.value(key).toString().trimmed().toLower();
+        if (!first.isEmpty() && !second.isEmpty()) return first == second;
     }
     return false;
 }

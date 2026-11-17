@@ -1,5 +1,6 @@
 #include "geocoin/node/node_config_loader.hpp"
 #include "geocoin/network/dns_seeds.h"
+#include "geocoin/utils/filesystem.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -30,11 +31,12 @@ void write_default_node_config_if_missing(
     const std::string& config_file,
     const std::string& network_id
 ) {
-    if (std::filesystem::exists(config_file)) {
+    const auto path = utils::path_from_utf8(config_file);
+    if (std::filesystem::exists(path)) {
         return;
     }
 
-    std::ofstream cfg(config_file, std::ios::out | std::ios::trunc);
+    std::ofstream cfg(path, std::ios::out | std::ios::trunc);
     if (!cfg.good()) {
         return;
     }
@@ -111,7 +113,7 @@ std::filesystem::path resolve_network_data_dir(
 ) {
     std::filesystem::path base = configured_data_dir.empty()
         ? std::filesystem::path("./data")
-        : std::filesystem::path(configured_data_dir);
+        : utils::path_from_utf8(configured_data_dir);
     base = base.lexically_normal();
 
     // lexically_normal() keeps a trailing separator ("<dir>/degree/"), whose

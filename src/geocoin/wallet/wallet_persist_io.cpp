@@ -26,9 +26,42 @@
 
 namespace geocoin::wallet {
 
+#if defined(_WIN32)
+namespace {
+bool already_private_file(HANDLE file) {
+    HANDLE raw_token = nullptr;
+    if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &raw_token)) return false;
+    utils::ScopedWindowsHandle token(raw_token);
+    DWORD size = 0;
+    (void)::GetTokenInformation(token.get(), TokenUser, nullptr, 0, &size);
+    std::vector<byte> storage(size);
+    if (!size || !::GetTokenInformation(token.get(), TokenUser, storage.data(), size, &size)) return false;
+    const auto sid = reinterpret_cast<TOKEN_USER*>(storage.data())->User.Sid;
+    PSID owner = nullptr;
+    PACL acl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (::GetSecurityInfo(file, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        &owner, nullptr, &acl, nullptr, &descriptor) != ERROR_SUCCESS) return false;
+    const std::unique_ptr<void, decltype(&::LocalFree)> cleanup(descriptor, &::LocalFree);
+    if (!owner || !::EqualSid(owner, sid) || !acl || !::IsValidAcl(acl)) return false;
+    for (DWORD i = 0; i < acl->AceCount; ++i) {
+        void* raw = nullptr;
+        if (!::GetAce(acl, i, &raw)) return false;
+        const auto* header = static_cast<ACE_HEADER*>(raw);
+        if (header->AceFlags & INHERIT_ONLY_ACE) continue;
+        if (header->AceType == ACCESS_DENIED_ACE_TYPE) continue;
+        if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) return false;
+        const auto* ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
+        if (!::EqualSid(const_cast<DWORD*>(&ace->SidStart), sid)) return false;
+    }
+    return true;
+}
+} // namespace
+#endif
+
 bool set_private_file_permissions(const std::string& path) {
 #if defined(_WIN32)
-    const std::filesystem::path native_path(path);
+    const auto native_path = wallet_path(path);
     HANDLE handle = ::CreateFileW(
         native_path.c_str(),
         READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
@@ -56,7 +89,7 @@ bool set_private_file_permissions(const std::string& path) {
 
 bool is_regular_private_file(const std::string& path) {
 #if defined(_WIN32)
-    const std::filesystem::path native_path(path);
+    const auto native_path = wallet_path(path);
     HANDLE handle = ::CreateFileW(
         native_path.c_str(),
         FILE_READ_ATTRIBUTES,
@@ -80,10 +113,10 @@ bool is_regular_private_file(const std::string& path) {
 
 int open_secure_input_file(const std::string& path, uint64_t& file_size) {
 #if defined(_WIN32)
-    const std::filesystem::path native_path(path);
+    const auto native_path = wallet_path(path);
     HANDLE handle = ::CreateFileW(
         native_path.c_str(),
-        GENERIC_READ | READ_CONTROL | WRITE_DAC,
+        GENERIC_READ | READ_CONTROL,
         FILE_SHARE_READ,
         nullptr,
         OPEN_EXISTING,
@@ -95,10 +128,22 @@ int open_secure_input_file(const std::string& path, uint64_t& file_size) {
     }
 
     uint64_t size = 0;
-    if (!utils::is_regular_nonreparse_file(handle, &size) ||
-        !utils::restrict_file_to_current_user(handle)) {
+    if (!utils::is_regular_nonreparse_file(handle, &size)) {
         (void)::CloseHandle(handle);
         return -1;
+    }
+    // Already-private sources need no ACL write, allowing migration from
+    // read-only media to a caller-selected writable output/backup directory.
+    if (!already_private_file(handle)) {
+        (void)::CloseHandle(handle);
+        handle = ::CreateFileW(native_path.c_str(), GENERIC_READ | READ_CONTROL | WRITE_DAC,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) return -1;
+        if (!utils::is_regular_nonreparse_file(handle, &size) || !utils::restrict_file_to_current_user(handle)) {
+            (void)::CloseHandle(handle);
+            return -1;
+        }
     }
 
     const int fd = ::_open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_RDONLY | _O_BINARY);
@@ -116,7 +161,7 @@ int open_secure_input_file(const std::string& path, uint64_t& file_size) {
 
     struct stat st {};
     if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != ::geteuid() || st.st_size < 0 ||
-        ::fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+        ((st.st_mode & (S_IRWXG | S_IRWXO)) != 0 && ::fchmod(fd, S_IRUSR | S_IWUSR) != 0)) {
         (void)::close(fd);
         return -1;
     }
@@ -168,7 +213,7 @@ int open_secure_temp_file(const std::string& filename, std::string& tmp_path) {
         if (!security.valid()) {
             return -1;
         }
-        const std::filesystem::path native_path(tmp_path);
+        const auto native_path = wallet_path(tmp_path);
         HANDLE handle = ::CreateFileW(
             native_path.c_str(),
             GENERIC_WRITE | READ_CONTROL | WRITE_DAC,
@@ -270,8 +315,8 @@ bool rename_file_durably(
     std::error_code& ec
 ) {
 #if defined(_WIN32)
-    const std::filesystem::path native_source(source);
-    const std::filesystem::path native_destination(destination);
+    const auto native_source = wallet_path(source);
+    const auto native_destination = wallet_path(destination);
     DWORD flags = MOVEFILE_WRITE_THROUGH;
     if (replace_existing) {
         flags |= MOVEFILE_REPLACE_EXISTING;
@@ -284,7 +329,7 @@ bool rename_file_durably(
     return false;
 #else
     (void)replace_existing;
-    std::filesystem::rename(source, destination, ec);
+    std::filesystem::rename(wallet_path(source), wallet_path(destination), ec);
     return !ec;
 #endif
 }
@@ -297,7 +342,7 @@ bool sync_parent_directory(const std::string& filename) {
     (void)filename;
     return true;
 #else
-    std::filesystem::path parent = std::filesystem::path(filename).parent_path();
+    std::filesystem::path parent = wallet_path(filename).parent_path();
     if (parent.empty()) {
         parent = ".";
     }
@@ -312,6 +357,18 @@ bool sync_parent_directory(const std::string& filename) {
     const bool ok = sync_result == 0;
     (void)::close(fd);
     return ok;
+#endif
+}
+
+bool publish_wallet_file_exclusive(const std::string& source, const std::string& destination) {
+#if defined(_WIN32)
+    std::error_code error;
+    return rename_file_durably(source, destination, false, error);
+#else
+    // Both paths are on the same filesystem. link() atomically fails on EEXIST.
+    if (::link(source.c_str(), destination.c_str()) != 0) return false;
+    (void)::unlink(source.c_str());
+    return true;
 #endif
 }
 

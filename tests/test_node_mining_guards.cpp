@@ -111,6 +111,9 @@ struct NodeTestAccess {
         node.mining_ = true;
         node.mining_threads_.clear();
         node.mining_threads_.resize(mining_threads);
+        node.mining_threads_requested_ = mining_threads;
+        node.mining_threads_spawned_ = mining_threads;
+        node.mining_threads_active_.store(mining_threads);
         {
             std::lock_guard<std::mutex> lock(node.mining_stats_mutex_);
             node.total_hashes_.store(total_hashes, std::memory_order_relaxed);
@@ -124,6 +127,7 @@ struct NodeTestAccess {
     {
         node.mining_ = false;
         node.mining_threads_.clear();
+        node.mining_threads_active_.store(0);
         std::lock_guard<std::mutex> lock(node.mining_stats_mutex_);
         node.current_hashrate_ = 0.0;
         node.last_reported_hashes_ = 0;

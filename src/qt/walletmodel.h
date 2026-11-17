@@ -18,10 +18,14 @@
 #include <thread>
 #include <vector>
 #include <optional>
+#include "managedasyncaction.h"
 
 class OptionsModel;
 class TransactionTableModel;
 class AddressTableModel;
+class QLockFile;
+class WalletSyncWorker;
+class QTimer;
 
 namespace geocoin {
     namespace wallet {
@@ -122,6 +126,16 @@ public:
                        const QString& password = QString());
 
     // Wallet operations
+    bool stageWallet(const QString& filename, const QString& password, bool create = false);
+    bool migrateStagedWallet(const QString& password, const QString& outputPath);
+    bool stagedWalletNeedsMigration() const { return stagedMigrationNeeded_; }
+    QString walletOperationError() const { return walletOperationError_; }
+    QString walletOperationCode() const { return walletOperationCode_; }
+    bool activateStagedWallet();
+    void discardStagedWallet();
+    void beginQuiesce();
+    bool isQuiesced();
+    void resumeWalletActivity();
     bool loadWallet(const QString &filename, const QString &password);
     bool createWallet(const QString &filename, const QString &password);
     void closeWallet();
@@ -159,6 +173,7 @@ public:
 
     QString getDataDirectory() const { return dataDirectory_; }
     QString getWalletFilePath() const { return walletFilePath_; }
+    static QString initialWalletPath(const QString& dataDir, const QString& explicitPath = QString());
 
     std::shared_ptr<geocoin::wallet::Wallet> getWallet() const { return wallet_; }
     std::shared_ptr<geocoin::state::ChainState> getChainState() const { return chain_state_; }
@@ -184,6 +199,25 @@ private:
     OptionsModel *optionsModel;
 
     std::shared_ptr<geocoin::wallet::Wallet> wallet_;
+    // Declared before wallet objects are released explicitly in the destructor.
+    std::unique_ptr<QLockFile> walletLock_;
+    std::unique_ptr<QLockFile> stagedLock_;
+    std::shared_ptr<geocoin::wallet::Wallet> stagedWallet_;
+    std::shared_ptr<WalletSyncWorker> syncWorker_;
+    ManagedAsyncAction quiesceAction_;
+    struct RefreshSnapshot;
+    ManagedAsyncAction refreshAction_;
+    std::shared_ptr<RefreshSnapshot> refreshSnapshot_;
+    QTimer* refreshTimer_ = nullptr;
+    bool refreshPending_ = false;
+    bool refreshRequested_ = false;
+    quint64 refreshGeneration_ = 0;
+    QString stagedPath_;
+    QString walletOperationError_;
+    QString walletOperationCode_;
+    bool stagedMigrationNeeded_ = false;
+    bool quiescing_ = false;
+    quint64 walletGeneration_ = 0;
     std::shared_ptr<geocoin::state::ChainState> chain_state_;
     std::shared_ptr<geocoin::network::Mempool> mempool_;
     geocoin::node::NodeServiceHandle nodeServices_{};
@@ -219,11 +253,15 @@ private:
     geocoin::ScopedObserver walletTransactionChangedConnection_;
     geocoin::ScopedObserver walletScanFinishedConnection_;
 
-    void startWalletRescanAsync(geocoin::Height fromHeight);
+    void startWalletRescanAsync(geocoin::Height fromHeight,
+        std::optional<geocoin::Height> knownTarget = std::nullopt);
+    void finishWalletRefresh();
+    void applyWalletRefresh(const RefreshSnapshot& snapshot);
     void waitForRescanThread();
     void onWalletRescanFinished();
     void emitWalletStateChanged();
     void clearWalletInPlace();
+    bool walletFailure(const QString& code, const QString& path, const QString& detail);
     bool getAuthorizedWalletPrivateKey(const QString& address,
                                        const QString& password,
                                        geocoin::bytes& privateKey,

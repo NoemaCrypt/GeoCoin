@@ -1,4 +1,5 @@
 #include "geocoin/node/node_config_loader.hpp"
+#include "geocoin/node/cpu_topology.hpp"
 #include "geocoin/node/node_key.hpp"
 #include "geocoin/node/node.hpp"
 #include "geocoin/network/dns_seeds.h"
@@ -247,7 +248,15 @@ void test_default_config_and_node_type_names() {
     const auto mainnet_seeds = network::get_hardcoded_seed_nodes(false);
     check(!mainnet_seeds.empty() && mainnet_seeds.front() == "45.12.114.4:3030",
           "existing mainnet configs also bootstrap from a literal IP without DNS");
+    for (const auto* endpoint : {"188.130.154.62:3030", "217.60.37.56:3030", "31.58.79.166:3030",
+                                "seed1.geocoin.network:3030", "seed2.geocoin.network:3030",
+                                "seed3.geocoin.network:3030", "seed4.geocoin.network:3030"}) {
+        check(std::count(mainnet_seeds.begin(), mainnet_seeds.end(), endpoint) == 1,
+              std::string("verified seed is present exactly once: ") + endpoint);
+    }
     const auto testnet_seeds = network::get_hardcoded_seed_nodes(true);
+    check(testnet_seeds.empty() && network::get_dns_seed_hostnames(true).empty(),
+          "isolated testnet never bootstraps from mainnet seeds");
     check(std::none_of(testnet_seeds.begin(), testnet_seeds.end(), [](const auto& endpoint) {
               return endpoint == "45.12.114.4:3030";
           }), "testnet fallback seeds do not include the mainnet peer");
@@ -408,9 +417,9 @@ void test_network_data_dir_resolution() {
 }
 
 void test_cpu_mining_thread_limits() {
-    const uint32_t limit = node::cpu_mining_thread_limit();
+    const size_t limit = node::cpu_mining_thread_limit();
     check(limit >= 1, "CPU mining thread limit is at least one thread");
-    check(limit <= node::MAX_CPU_MINING_THREADS, "CPU mining thread limit respects the global hard cap");
+    check(limit == node::cpu_mining_topology().capacity(), "CPU mining limit follows OS-allowed topology");
     check(node::clamp_cpu_mining_threads(0) == 1, "zero requested mining threads clamps to one");
     check(node::clamp_cpu_mining_threads(limit + 1024) == limit, "oversized mining thread request clamps to runtime limit");
 }

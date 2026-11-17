@@ -73,10 +73,14 @@ NodeStatus Node::get_status() const {
     status.mempool_size = mempool_->size();
     status.total_supply = chain_state_->get_total_supply();
 
+    status.mining = mining_.load(std::memory_order_acquire);
+    status.mining_threads_requested = mining_threads_requested_.load(std::memory_order_acquire);
+    status.mining_threads_spawned = mining_threads_spawned_.load(std::memory_order_acquire);
+    status.mining_threads_active = mining_threads_active_.load(std::memory_order_acquire);
+    status.mining_threads = status.mining_threads_active;
     {
-        std::lock_guard<std::mutex> mining_lock(mining_control_mutex_);
-        status.mining = mining_.load(std::memory_order_acquire);
-        status.mining_threads = mining_threads_.size();
+        std::lock_guard<std::mutex> stats_lock(mining_stats_mutex_);
+        status.mining_error = mining_error_;
     }
     status.mined_blocks_accepted = mined_blocks_accepted_.load(std::memory_order_relaxed);
 

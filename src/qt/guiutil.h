@@ -15,6 +15,7 @@
 
 QT_BEGIN_NAMESPACE
 class QApplication;
+class QIcon;
 class QScrollArea;
 class QStackedWidget;
 class QWidget;
@@ -132,6 +133,7 @@ namespace GUIUtil
     bool isDarkTheme(const QString& theme = QString());
     void applyApplicationTheme(QApplication* app, const QString& theme);
     void applyNativeWindowTheme(QWidget* widget, const QString& theme);
+    QIcon themeToggleIcon(bool dark);
     QString windowStyleSheet(const QString& theme);
     QString dialogStyleSheet(const QString& theme);
     void applyDialogStyle(QWidget* widget, const QString& theme = QString());

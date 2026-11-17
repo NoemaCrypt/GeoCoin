@@ -8,6 +8,7 @@
 #include "addresstablemodel.h"
 #include "guiutil.h"
 #include "qtlogging.h"
+#include "walletsyncworker.h"
 #include "geocoin/wallet/wallet.hpp"
 #include "geocoin/wallet/address_funds.hpp"
 #include "geocoin/wallet/multisig_service.hpp"
@@ -39,6 +40,9 @@
 #include <QMetaObject>
 #include <QRegularExpression>
 #include <QThread>
+#include <QLockFile>
+#include <QSettings>
+#include <QCryptographicHash>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -46,6 +50,9 @@
 #include <limits>
 #include <unordered_set>
 #include <utility>
+#ifndef Q_OS_WIN
+#include <unistd.h>
+#endif
 
 // Helper function to generate random private key
 static geocoin::bytes generate_random_private_key() {
@@ -573,6 +580,18 @@ bool loadMultisigConfigFromJson(const QString& jsonStr, MultisigConfig& config, 
 
 } // namespace
 
+struct WalletModel::RefreshSnapshot {
+    qint64 balances[6]{};
+    geocoin::Height height = 0;
+    geocoin::Hash256 tip{};
+    bool haveTip = false;
+    bool ibd = false;
+    bool reorg = false;
+    bool rescan = false;
+    geocoin::Height rescanFrom = 0;
+    TransactionTableModel::Snapshot transactions;
+};
+
 WalletModel::WalletModel(QObject *parent) :
     QObject(parent),
     transactionTableModel(nullptr),
@@ -596,12 +615,22 @@ WalletModel::WalletModel(QObject *parent) :
     optionsModel = new OptionsModel(this);
     transactionTableModel = new TransactionTableModel(this);
     addressTableModel = new AddressTableModel(this);
+    refreshTimer_ = new QTimer(this);
+    refreshTimer_->setInterval(25);
+    connect(refreshTimer_, &QTimer::timeout, this, &WalletModel::finishWalletRefresh);
 }
 
 WalletModel::~WalletModel()
 {
     try {
+        beginQuiesce();
+        quiesceAction_.wait();
         waitForRescanThread();
+        syncWorker_.reset();
+        stagedWallet_.reset();
+        wallet_.reset();
+        stagedLock_.reset();
+        walletLock_.reset();
     } catch (...) {
         // Suppress all exceptions in destructor
     }
@@ -647,14 +676,15 @@ bool WalletModel::getRescanProgress(int& current, int& target) const
     return target > 0;
 }
 
-void WalletModel::startWalletRescanAsync(geocoin::Height fromHeight)
+void WalletModel::startWalletRescanAsync(geocoin::Height fromHeight,
+    std::optional<geocoin::Height> knownTarget)
 {
-    if (!wallet_ || !chain_state_) {
+    if (quiescing_ || !wallet_ || !chain_state_) {
         return;
     }
 
-    geocoin::Height current_height = chain_state_->get_height();
-    geocoin::Height start_height = std::min(fromHeight, current_height);
+    geocoin::Height current_height = knownTarget.value_or(cachedNumBlocks);
+    geocoin::Height start_height = fromHeight;
 
     {
         std::lock_guard<std::mutex> lock(rescanMutex_);
@@ -676,8 +706,12 @@ void WalletModel::startWalletRescanAsync(geocoin::Height fromHeight)
     auto wallet_snapshot = wallet_;
     auto chain_snapshot = chain_state_;
     try {
-        rescanThread_ = std::thread([this, wallet_snapshot, chain_snapshot, start_height]() {
+        const auto generation = walletGeneration_;
+        rescanThread_ = std::thread([this, wallet_snapshot, chain_snapshot, fromHeight, generation]() {
             try {
+                const auto height = chain_snapshot->get_height();
+                { std::lock_guard<std::mutex> lock(rescanMutex_); rescanTargetHeight_ = height; }
+                const auto start_height = std::min(fromHeight, height);
                 wallet_snapshot->scan_blockchain(chain_snapshot, start_height);
             } catch (const std::exception& exception) {
                 qWarning() << "Wallet rescan failed:" << exception.what();
@@ -686,7 +720,9 @@ void WalletModel::startWalletRescanAsync(geocoin::Height fromHeight)
             }
             QMetaObject::invokeMethod(
                 this,
-                [this]() { onWalletRescanFinished(); },
+                [this, generation]() {
+                    if (!quiescing_ && generation == walletGeneration_) onWalletRescanFinished();
+                },
                 Qt::QueuedConnection
             );
         });
@@ -871,12 +907,12 @@ qint64 WalletModel::estimateFee(qint64 amount) const
 
 bool WalletModel::isWalletLoaded() const
 {
-    return wallet_ != nullptr && wallet_->get_key_count() > 0;
+    return wallet_ != nullptr && (wallet_->get_key_count() > 0 || !wallet_->get_watch_only_addresses().empty());
 }
 
 bool WalletModel::isWalletEncrypted() const
 {
-    return wallet_ && wallet_->has_password_protection();
+    return wallet_ && (wallet_->has_password_protection() || wallet_->last_load_result().encrypted);
 }
 
 bool WalletModel::isWalletLocked() const
@@ -1062,129 +1098,267 @@ WalletModel::StatusCode WalletModel::sendCoins(const QString &address, qint64 am
 
 bool WalletModel::loadWallet(const QString &filename, const QString &password)
 {
-    Q_ASSERT(QThread::currentThread() == thread());
-
-    if (!wallet_) {
-        wallet_ = std::make_shared<geocoin::wallet::Wallet>();
-    }
-
-    const QString walletPath = walletFilePath_.isEmpty() ? filename : walletFilePath_;
-    if (walletPath.isEmpty() ||
-        (!filename.isEmpty() &&
-         QFileInfo(filename).absoluteFilePath() != QFileInfo(walletPath).absoluteFilePath())) {
-        return false;
-    }
-
-    std::string pwd = password.toStdString();
-    GUIUtil::ScopedStringCleanser passwordCleanser(pwd);
-
-    bool success = wallet_->load_from_file(
-        walletPath.toStdString(),
-        pwd
-    );
-
-    if (success) {
-        walletFilePath_ = walletPath;
-        walletDirty_ = false;
-
-        // ВАЖНО: после рестарта ноды новые блоки могут не приходить,
-        // поэтому без сканирования кошелек не узнает о coinbase/входящих транзакциях,
-        // а баланс останется 0.
-        if (chain_state_) {
-            geocoin::Height current_height = chain_state_->get_height();
-            geocoin::Height wallet_best_height = wallet_->get_last_scanned_height();
-            geocoin::Hash256 active_anchor{};
-            const bool anchor_matches = wallet_best_height <= current_height &&
-                chain_state_->get_active_block_hash(wallet_best_height, active_anchor) &&
-                active_anchor == wallet_->get_last_scanned_block_hash();
-            if (!anchor_matches) {
-                startWalletRescanAsync(0);
-            } else if (wallet_best_height < current_height) {
-                startWalletRescanAsync(wallet_best_height + 1);
-            }
-        }
-
-        updateBalance();
-        transactionTableModel->updateTransactions();
-        addressTableModel->updateAddresses();
-        emitWalletStateChanged();
-    }
-
-    return success;
+    if (!stageWallet(filename, password)) return false;
+    if (stagedMigrationNeeded_) return walletFailure(QStringLiteral("migration_required"), filename,
+        tr("Legacy wallet requires explicit migration confirmation."));
+    return activateStagedWallet();
 }
 
 bool WalletModel::createWallet(const QString &filename, const QString &password)
 {
+    return stageWallet(filename, password, true) && activateStagedWallet();
+}
+
+namespace {
+QString canonicalWalletPath(const QString& filename)
+{
+    const QFileInfo info(filename);
+    if (info.exists()) return info.canonicalFilePath();
+    const QString parent = info.dir().canonicalPath();
+    return parent.isEmpty() ? QString() : QDir(parent).filePath(info.fileName());
+}
+
+QString walletSettingsKey(const QString& dataDir)
+{
+    const QString canonical = QDir(dataDir).canonicalPath();
+    const QByteArray identity = (canonical.isEmpty() ? QDir(dataDir).absolutePath() : canonical).toUtf8();
+    return QStringLiteral("wallet/last_successful/%1").arg(QString::fromLatin1(
+        QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex()));
+}
+
+QString walletLockPath(const QString& path)
+{
+    // A canonical, process-independent identity also permits migration from a
+    // read-only source directory without dropping the source lock.
+    QString directoryName = QStringLiteral("geocoin-wallet-locks");
+#ifndef Q_OS_WIN
+    directoryName += QStringLiteral("-%1").arg(static_cast<qulonglong>(::geteuid()));
+#endif
+    const QString directory = QDir::temp().filePath(directoryName);
+    if (!QDir().mkpath(directory)) return QString();
+#ifndef Q_OS_WIN
+    const QFileInfo lockDirectory(directory);
+    if (lockDirectory.isSymLink() || lockDirectory.ownerId() != ::geteuid() ||
+        !QFile::setPermissions(directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) return QString();
+#endif
+    QString identity = path;
+#ifdef Q_OS_WIN
+    identity = identity.toCaseFolded();
+#endif
+    return QDir(directory).filePath(QString::fromLatin1(QCryptographicHash::hash(
+        identity.toUtf8(), QCryptographicHash::Sha256).toHex()) + QStringLiteral(".lock"));
+}
+
+std::unique_ptr<QLockFile> lockBackupDestination(const QString& path, QString* error)
+{
+    const QString backup = canonicalWalletPath(path + QStringLiteral(".bak"));
+    auto lock = std::make_unique<QLockFile>(walletLockPath(backup));
+    lock->setStaleLockTime(0);
+    if (backup.isEmpty() || !lock->tryLock(0)) {
+        if (error) *error = WalletModel::tr("Wallet backup destination is locked or unavailable [backup_lock]: %1").arg(backup);
+        return {};
+    }
+    return lock;
+}
+}
+
+QString WalletModel::initialWalletPath(const QString& dataDir, const QString& explicitPath)
+{
+    if (!explicitPath.isEmpty()) return QFileInfo(explicitPath).isAbsolute()
+        ? explicitPath : QDir(dataDir).filePath(explicitPath);
+    return QSettings().value(walletSettingsKey(dataDir)).toString();
+}
+
+bool WalletModel::walletFailure(const QString& code, const QString& path, const QString& detail)
+{
+    walletOperationCode_ = code.toLower();
+    walletOperationError_ = tr("Wallet operation failed [%1]\nPath: %2\n%3").arg(code, path, detail);
+    return false;
+}
+
+void WalletModel::discardStagedWallet()
+{
+    stagedWallet_.reset();
+    stagedLock_.reset();
+    stagedPath_.clear();
+    stagedMigrationNeeded_ = false;
+}
+
+bool WalletModel::stageWallet(const QString& filename, const QString& password, bool create)
+{
     Q_ASSERT(QThread::currentThread() == thread());
-
-    if (!wallet_) {
-        wallet_ = std::make_shared<geocoin::wallet::Wallet>();
-    }
-
-    const QString walletPath = walletFilePath_.isEmpty() ? filename : walletFilePath_;
-    if (walletPath.isEmpty() ||
-        (!filename.isEmpty() &&
-         QFileInfo(filename).absoluteFilePath() != QFileInfo(walletPath).absoluteFilePath()) ||
-        QFileInfo::exists(walletPath) || isWalletLoaded()) {
-        return false;
-    }
-
-    // Generate new random private key
-    geocoin::bytes private_key = generate_random_private_key();
-    geocoin::utils::ScopedContainerCleanser<geocoin::bytes> privateKeyCleanser(private_key);
-
-    clearWalletInPlace();
-
-    if (!wallet_->initialize(private_key)) {
-        return false;
-    }
-
+    discardStagedWallet();
+    walletOperationError_.clear();
+    walletOperationCode_.clear();
+    const QString path = canonicalWalletPath(filename);
+    if (filename.isEmpty() || path.isEmpty()) return walletFailure(QStringLiteral("invalid_path"), filename,
+        tr("The wallet parent directory does not exist."));
+#ifdef Q_OS_WIN
+    const bool samePath = path.compare(walletFilePath_, Qt::CaseInsensitive) == 0;
+#else
+    const bool samePath = path == walletFilePath_;
+#endif
+    if (samePath && walletLock_)
+        return walletFailure(QStringLiteral("already_active"), path, tr("This wallet is already active."));
+    if (create && QFileInfo::exists(path)) return walletFailure(QStringLiteral("already_exists"), path,
+        tr("Choose a new filename. Existing wallets are never overwritten by Create."));
+    if (!create && !QFileInfo(path).isFile()) return walletFailure(QStringLiteral("not_found"), path,
+        tr("Select an existing wallet file."));
+    const QString lockPath = walletLockPath(path);
+    if (lockPath.isEmpty()) return walletFailure(QStringLiteral("wallet_lock_directory"), path, tr("Cannot create wallet lock directory."));
+    auto lock = std::make_unique<QLockFile>(lockPath);
+    lock->setStaleLockTime(0);
+    if (!lock->tryLock(0)) return walletFailure(QStringLiteral("wallet_lock"), path,
+        lock->error() == QLockFile::LockFailedError ? tr("Another process holds this wallet lock.")
+            : tr("Cannot create the wallet lock. Check directory permissions."));
+    auto candidate = std::make_shared<geocoin::wallet::Wallet>();
     std::string pwd = password.toStdString();
-    GUIUtil::ScopedStringCleanser passwordCleanser(pwd);
-
-    bool success = wallet_->save_to_file(
-        walletPath.toStdString(),
-        pwd
-    );
-
-    if (success) {
-        walletFilePath_ = walletPath;
-        walletDirty_ = false;
-
-        // Remember password
-        if (!pwd.empty()) {
-            wallet_->remember_password(pwd);
+    GUIUtil::ScopedStringCleanser cleanser(pwd);
+    try {
+        if (create) {
+            QString error;
+            auto backupLock = lockBackupDestination(path, &error);
+            if (!backupLock) return walletFailure(QStringLiteral("backup_lock"), path, error);
+            auto key = generate_random_private_key();
+            geocoin::utils::ScopedContainerCleanser<geocoin::bytes> keyCleanser(key);
+            if (!candidate->initialize(key) || !candidate->save_to_file(path.toStdString(), pwd))
+                return walletFailure(QStringLiteral("create_failed"), path, tr("Could not durably save the new wallet."));
+        } else {
+            const auto result = candidate->load_from_file_result(path.toStdString(), pwd, false);
+            if (!result.ok()) {
+                return walletFailure(QString::fromLatin1(geocoin::wallet::wallet_load_error_name(result.error)),
+                    path, tr("The selected file was not activated. Check its format, passphrase and permissions."));
+            }
+            stagedMigrationNeeded_ = result.migration_needed;
+            if (result.encrypted && !candidate->has_password_protection()) candidate->remember_password(pwd);
         }
-
-        // Scan blockchain for transactions
-        if (chain_state_) {
-            startWalletRescanAsync(0);
-        }
-
-        // Update all data
-        updateBalance();
-        transactionTableModel->updateTransactions();
-        addressTableModel->updateAddresses();
-
-        // Force emit signals to update UI
-        emit balanceChanged(cachedBalance, cachedUnconfirmedBalance, cachedImmatureBalance);
-        emit watchOnlyBalanceChanged(
-            cachedWatchOnlyBalance,
-            cachedWatchOnlyUnconfirmedBalance,
-            cachedWatchOnlyImmatureBalance
-        );
-        emitWalletStateChanged();
-    } else {
-        clearWalletInPlace();
-        walletDirty_ = false;
+        stagedWallet_ = std::move(candidate);
+        stagedLock_ = std::move(lock);
+        stagedPath_ = path;
+        return true;
+    } catch (const std::exception& exception) {
+        return walletFailure(QStringLiteral("exception"), path, QString::fromUtf8(exception.what()));
     }
+}
 
-    return success;
+bool WalletModel::migrateStagedWallet(const QString& password, const QString& outputPath)
+{
+    if (!stagedWallet_ || !stagedMigrationNeeded_) return false;
+    const QString output = canonicalWalletPath(outputPath);
+    if (output.isEmpty()) return walletFailure(QStringLiteral("invalid_output"), outputPath, tr("Choose an existing output directory."));
+    std::unique_ptr<QLockFile> outputLock;
+    if (output != stagedPath_) {
+        if (QFileInfo::exists(output)) return walletFailure(QStringLiteral("output_exists"), output, tr("Choose a new output filename."));
+        outputLock = std::make_unique<QLockFile>(walletLockPath(output));
+        outputLock->setStaleLockTime(0);
+        if (!outputLock->tryLock(0)) return walletFailure(QStringLiteral("output_lock"), output, tr("Cannot lock migration output."));
+    }
+    std::string pwd = password.toStdString();
+    GUIUtil::ScopedStringCleanser cleanser(pwd);
+    geocoin::wallet::WalletMigrationOptions options;
+    options.confirmed = true;
+    options.output_path = output.toStdString();
+    if (output != stagedPath_) options.backup_path = (output + QStringLiteral(".legacy.bak")).toStdString();
+    const auto result = geocoin::wallet::Wallet::migrate_file(stagedPath_.toStdString(), pwd, options);
+    if (!result.ok() || !result.durable) return walletFailure(result.committed ? QStringLiteral("migration_committed_not_durable")
+        : QString::fromLatin1(geocoin::wallet::wallet_migration_error_name(result.error)),
+        stagedPath_, tr("Migration was not confirmed durable. Source: %1\nOutput: %2\nBackup: %3")
+            .arg(stagedPath_, QString::fromStdString(result.output_path), QString::fromStdString(result.backup_path)));
+    auto candidate = std::make_shared<geocoin::wallet::Wallet>();
+    const auto loaded = candidate->load_from_file_result(output.toStdString(), pwd, false);
+    if (!loaded.ok())
+        return walletFailure(QStringLiteral("migration_reload"), output, tr("Migration output could not be reopened."));
+    if (loaded.encrypted && !candidate->has_password_protection()) candidate->remember_password(pwd);
+    stagedWallet_ = std::move(candidate);
+    if (outputLock) stagedLock_ = std::move(outputLock);
+    stagedPath_ = output;
+    stagedMigrationNeeded_ = false;
+    return true;
+}
+
+void WalletModel::beginQuiesce()
+{
+    if (quiescing_ && (!quiesceAction_.failed() || !quiesceAction_.reapIfFinished())) return;
+    if (walletOperationCode_ == QStringLiteral("wallet_sync_stop_failed")) {
+        walletOperationCode_.clear();
+        walletOperationError_.clear();
+    }
+    quiescing_ = true;
+    if (refreshTimer_) refreshTimer_->stop();
+    ++walletGeneration_;
+    unsubscribeFromCoreSignals();
+    if (nodeServices_.events) nodeServices_.events->clear_chain_mutation_event_callback();
+    { std::lock_guard<std::mutex> lock(rescanMutex_); pendingRescan_ = false; }
+    if (wallet_) wallet_->abort_scan();
+    quiesceAction_.start([this]() {
+        refreshAction_.wait();
+        if (syncWorker_) syncWorker_->stopAndDrain();
+        waitForRescanThread();
+    });
+}
+
+bool WalletModel::isQuiesced()
+{
+    if (!quiescing_ || !quiesceAction_.reapIfFinished()) return false;
+    if (quiesceAction_.failed()) return walletFailure(QStringLiteral("wallet_sync_stop_failed"), walletFilePath_,
+        tr("The wallet synchronization stop failed. Wallet and database ownership are retained; retry cleanup."));
+    return true;
+}
+
+void WalletModel::resumeWalletActivity()
+{
+    quiescing_ = false;
+    refreshPending_ = false;
+    refreshRequested_ = false;
+    refreshSnapshot_.reset();
+    { std::lock_guard<std::mutex> lock(rescanMutex_); rescanInProgress_ = false; pendingRescan_ = false; }
+    syncWorker_.reset();
+    if (!isWalletLoaded() || !chain_state_) return;
+    subscribeToCoreSignals();
+    const std::weak_ptr<geocoin::node::ChainQueryService> query = nodeServices_.chain_query;
+    syncWorker_ = std::make_shared<WalletSyncWorker>(wallet_, chain_state_, [query]() {
+        if (const auto service = query.lock()) return service->get_mempool_transactions();
+        return std::vector<geocoin::core::Transaction>{};
+    });
+    const std::weak_ptr<WalletSyncWorker> worker = syncWorker_;
+    nodeServices_.events->set_chain_mutation_event_callback([worker](const auto& event) {
+        if (auto live = worker.lock()) (void)live->enqueue(event);
+    });
+    // Reconcile the gap between detaching the old subscriber and binding this one.
+    geocoin::services::ChainMutationEvent gap;
+    gap.kind = geocoin::services::ChainMutationEventKind::RESCAN_REQUIRED;
+    gap.gap.chain_transition_lost = true;
+    (void)syncWorker_->enqueue(gap);
+}
+
+bool WalletModel::activateStagedWallet()
+{
+    if (!stagedWallet_ || stagedMigrationNeeded_) return false;
+    if (walletDirty_) return walletFailure(QStringLiteral("unsaved_changes"), walletFilePath_, tr("Save the active wallet first."));
+    if (isWalletLoaded() && !isQuiesced()) return walletFailure(QStringLiteral("wallet_busy"), walletFilePath_, tr("Stop mining and wallet synchronization before switching."));
+    wallet_.reset();
+    walletLock_.reset();
+    wallet_ = std::move(stagedWallet_);
+    walletLock_ = std::move(stagedLock_);
+    walletFilePath_ = std::move(stagedPath_);
+    walletDirty_ = false;
+    haveCachedBestBlockHash_ = false;
+    applyWalletRefresh(RefreshSnapshot{});
+    QSettings settings;
+    settings.setValue(walletSettingsKey(dataDirectory_), walletFilePath_);
+    settings.sync();
+    resumeWalletActivity();
+    updateBalance();
+    transactionTableModel->updateTransactions();
+    addressTableModel->updateAddresses();
+    emitWalletStateChanged();
+    return true;
 }
 
 void WalletModel::closeWallet()
 {
     Q_ASSERT(QThread::currentThread() == thread());
+    if (isWalletLoaded() && (!isQuiesced() || walletDirty_)) return;
 
     {
         std::lock_guard<std::mutex> lock(rescanMutex_);
@@ -1198,9 +1372,13 @@ void WalletModel::closeWallet()
         rescanTargetHeight_ = 0;
     }
 
-    if (wallet_) {
-        clearWalletInPlace();
-    }
+    unsubscribeFromCoreSignals();
+    syncWorker_.reset();
+    wallet_.reset();
+    walletLock_.reset();
+    walletFilePath_.clear();
+    wallet_ = std::make_shared<geocoin::wallet::Wallet>();
+    applyWalletRefresh(RefreshSnapshot{});
 
     walletDirty_ = false;
 
@@ -1249,6 +1427,8 @@ bool WalletModel::saveWallet(const QString& password, QString* error)
         }
     }
 
+    auto backupLock = lockBackupDestination(walletFilePath_, error);
+    if (!backupLock) return false;
     const bool success = wallet_->save_to_file(walletFilePath_.toStdString(), pwd);
     if (!success) {
         if (error) *error = tr("Failed to save wallet to %1").arg(walletFilePath_);
@@ -1276,6 +1456,8 @@ bool WalletModel::encryptWallet(const QString& password, QString* error)
         return false;
     }
 
+    auto backupLock = lockBackupDestination(walletFilePath_, error);
+    if (!backupLock) return false;
     walletDirty_ = true;
     std::string pwd = password.toStdString();
     GUIUtil::ScopedStringCleanser passwordCleanser(pwd);
@@ -1315,6 +1497,8 @@ bool WalletModel::changeWalletPassphrase(const QString& oldPassword,
     }
     std::string newPwd = newPassword.toStdString();
     GUIUtil::ScopedStringCleanser newPasswordCleanser(newPwd);
+    auto backupLock = lockBackupDestination(walletFilePath_, error);
+    if (!backupLock) return false;
     walletDirty_ = true;
 
     const bool success = wallet_->change_password(
@@ -1348,6 +1532,17 @@ bool WalletModel::backupWallet(const QString& filename,
         if (error) *error = tr("No wallet is loaded or backup path is empty");
         return false;
     }
+    const QString destination = canonicalWalletPath(filename);
+    if (destination.isEmpty() || destination == walletFilePath_) {
+        if (error) *error = tr("Choose a different, valid backup filename.");
+        return false;
+    }
+    QLockFile destinationLock(walletLockPath(destination));
+    destinationLock.setStaleLockTime(0);
+    if (!destinationLock.tryLock(0)) {
+        if (error) *error = tr("Backup destination is locked or cannot be locked: %1").arg(destination);
+        return false;
+    }
 
     std::string pwd;
     GUIUtil::ScopedStringCleanser passwordCleanser(pwd);
@@ -1358,7 +1553,9 @@ bool WalletModel::backupWallet(const QString& filename,
             return false;
         }
     }
-    const bool success = wallet_->save_to_file(filename.toStdString(), pwd);
+    auto backupLock = lockBackupDestination(destination, error);
+    if (!backupLock) return false;
+    const bool success = wallet_->save_to_file(destination.toStdString(), pwd);
     if (!success && error) {
         *error = tr("Failed to write wallet backup to %1").arg(filename);
     }
@@ -1398,21 +1595,7 @@ bool WalletModel::setRuntimeContext(
     transactionRefreshPending_ = true;
     walletDirty_ = false;
 
-    if (wallet_->get_key_count() > 0 || !wallet_->get_watch_only_addresses().empty()) {
-        const geocoin::Height current_height = chain_state_->get_height();
-        const geocoin::Height wallet_best_height = wallet_->get_last_scanned_height();
-        geocoin::Hash256 active_anchor{};
-        const bool anchor_matches = wallet_best_height <= current_height &&
-            chain_state_->get_active_block_hash(wallet_best_height, active_anchor) &&
-            active_anchor == wallet_->get_last_scanned_block_hash();
-        if (!anchor_matches) {
-            startWalletRescanAsync(0);
-        } else if (wallet_best_height < current_height) {
-            startWalletRescanAsync(wallet_best_height + 1);
-        }
-    }
-
-    cachedNumBlocks = chain_state_->get_height();
+    cachedNumBlocks = 0;
     updateBalance();
     if (transactionTableModel) {
         transactionTableModel->updateTransactions();
@@ -1428,7 +1611,6 @@ bool WalletModel::setRuntimeContext(
 void WalletModel::setDataDirectory(const QString& dataDir)
 {
     dataDirectory_ = QDir(dataDir).absolutePath();
-    walletFilePath_ = QDir(dataDirectory_).filePath(QStringLiteral("wallet.dat"));
 }
 
 bool WalletModel::rememberMultisigConfig(
@@ -1454,206 +1636,142 @@ bool WalletModel::rememberMultisigConfig(
 
 void WalletModel::updateBalance()
 {
-    if (!wallet_ || !chain_state_) {
-        cachedBalance = 0;
-        cachedUnconfirmedBalance = 0;
-        cachedImmatureBalance = 0;
-        emit balanceChanged(0, 0, 0);
-        cachedWatchOnlyBalance = 0;
-        cachedWatchOnlyUnconfirmedBalance = 0;
-        cachedWatchOnlyImmatureBalance = 0;
-        emit watchOnlyBalanceChanged(0, 0, 0);
-        return;
-    }
-
-    // UTXO-based balance (authoritative, matches consensus/ChainState)
-    // Это избегает ошибок старого метода (суммирование net_amount по истории транзакций).
-    qint64 newBalance = 0;
-    qint64 newUnconfirmedBalance = 0;
-    qint64 newImmatureBalance = 0;
-
-    qint64 newWatchOnlyBalance = 0;
-    qint64 newWatchOnlyUnconfirmedBalance = 0;
-    qint64 newWatchOnlyImmatureBalance = 0;
-    bool balanceAccountingValid = true;
-
-    auto checked_accumulate = [&balanceAccountingValid](qint64& total, qint64 value) {
-        if (!balanceAccountingValid) return false;
-        geocoin::Amount next = 0;
-        if (value < 0 || !geocoin::checked_add_amount(
-                static_cast<geocoin::Amount>(total),
-                static_cast<geocoin::Amount>(value), next)) {
-            balanceAccountingValid = false;
-            return false;
-        }
-        total = next;
-        return true;
-    };
-
-    const auto pending = pendingTransactions();
-    auto sum_addresses = [&](const std::vector<geocoin::Address>& addrs,
-                             qint64& out_available,
-                             qint64& out_unconfirmed,
-                             qint64& out_immature) {
-        for (const auto& addr : addrs) {
-            const auto funds = geocoin::wallet::classify_address_funds(*chain_state_, addr, pending);
-            if (!funds.valid ||
-                !checked_accumulate(out_available, funds.available) ||
-                !checked_accumulate(out_unconfirmed, funds.unconfirmed) ||
-                !checked_accumulate(out_immature, funds.immature)) {
-                balanceAccountingValid = false;
-                return;
-            }
-        }
-    };
-
-    const auto spendable_addrs = wallet_->get_spendable_addresses();
-    const auto watch_only_addrs = wallet_->get_watch_only_addresses();
-    sum_addresses(spendable_addrs, newBalance, newUnconfirmedBalance, newImmatureBalance);
-    if (balanceAccountingValid) {
-        sum_addresses(
-            watch_only_addrs,
-            newWatchOnlyBalance,
-            newWatchOnlyUnconfirmedBalance,
-            newWatchOnlyImmatureBalance);
-    }
-
-    if (!balanceAccountingValid) {
-        // Corrupt/overflowing state must never invoke signed-overflow UB or show
-        // a wrapped positive balance. Fail closed until the next clean poll.
-        qWarning() << "[WalletModel] Balance accounting overflow or negative UTXO; balances reset to zero";
-        newBalance = 0;
-        newUnconfirmedBalance = 0;
-        newImmatureBalance = 0;
-        newWatchOnlyBalance = 0;
-        newWatchOnlyUnconfirmedBalance = 0;
-        newWatchOnlyImmatureBalance = 0;
-    }
-
-    // Update cached balances and emit signal if changed
-    if (newBalance != cachedBalance || newUnconfirmedBalance != cachedUnconfirmedBalance || newImmatureBalance != cachedImmatureBalance) {
-        cachedBalance = newBalance;
-        cachedUnconfirmedBalance = newUnconfirmedBalance;
-        cachedImmatureBalance = newImmatureBalance;
-        emit balanceChanged(cachedBalance, cachedUnconfirmedBalance, cachedImmatureBalance);
-    }
-
-    if (newWatchOnlyBalance != cachedWatchOnlyBalance ||
-        newWatchOnlyUnconfirmedBalance != cachedWatchOnlyUnconfirmedBalance ||
-        newWatchOnlyImmatureBalance != cachedWatchOnlyImmatureBalance) {
-        cachedWatchOnlyBalance = newWatchOnlyBalance;
-        cachedWatchOnlyUnconfirmedBalance = newWatchOnlyUnconfirmedBalance;
-        cachedWatchOnlyImmatureBalance = newWatchOnlyImmatureBalance;
-        emit watchOnlyBalanceChanged(
-            cachedWatchOnlyBalance,
-            cachedWatchOnlyUnconfirmedBalance,
-            cachedWatchOnlyImmatureBalance
-        );
-    }
+    if (quiescing_) return;
+    refreshRequested_ = true;
+    pollBalanceChanged();
 }
 
 void WalletModel::pollBalanceChanged()
 {
-    // Вызывается таймером.
-    // Проверяем, нужно ли обновить баланс и таблицу транзакций.
-
-    if (!wallet_ || !chain_state_) {
-        return;
+    if (quiescing_) return;
+    if (refreshPending_) {
+        finishWalletRefresh();
+        if (refreshPending_ || quiescing_) return;
     }
+    if (!refreshAction_.reapIfFinished()) return;
+    if (!wallet_) { applyWalletRefresh(RefreshSnapshot{}); return; }
 
-    geocoin::Height current_height = chain_state_->get_height();
-    const geocoin::Height previous_height = cachedNumBlocks;
-
-    geocoin::Hash256 current_best_hash{};
-    bool have_current_best_hash = false;
-    if (nodeServices_.chain_query) {
-        geocoin::core::Block active_tip;
-        if (nodeServices_.chain_query->get_block_by_height(current_height, active_tip)) {
-            current_best_hash = active_tip.get_hash();
-            have_current_best_hash = true;
-        }
-    }
-
-    bool activeChainReorg = false;
-    if (haveCachedBestBlockHash_ && nodeServices_.chain_query) {
-        if (current_height < previous_height) {
-            activeChainReorg = true;
-        } else {
-            geocoin::core::Block block_at_previous_tip;
-            if (nodeServices_.chain_query->get_block_by_height(
-                    previous_height,
-                    block_at_previous_tip
-                ) &&
-                block_at_previous_tip.get_hash() != cachedBestBlockHash_) {
-                activeChainReorg = true;
+    const auto wallet = wallet_;
+    const auto chain = chain_state_;
+    const auto query = nodeServices_.chain_query;
+    const auto info = nodeServices_.info;
+    const auto previous = transactionTableModel->snapshot();
+    const auto oldHeight = cachedNumBlocks;
+    const auto oldTip = cachedBestBlockHash_;
+    const bool hadTip = haveCachedBestBlockHash_;
+    const bool postIbd = lastIbdState && !didPostIbdRescan;
+    refreshSnapshot_ = std::make_shared<RefreshSnapshot>();
+    const auto result = refreshSnapshot_;
+    refreshGeneration_ = walletGeneration_;
+    refreshRequested_ = false;
+    refreshPending_ = refreshAction_.start([wallet, chain, query, info, previous,
+        oldHeight, oldTip, hadTip, postIbd, result]() {
+        if (chain) {
+            result->height = chain->get_height();
+            geocoin::core::Block tip;
+            if (query && query->get_block_by_height(result->height, tip)) {
+                result->tip = tip.get_hash();
+                result->haveTip = true;
+            }
+            if (hadTip && query) {
+                geocoin::core::Block prior;
+                result->reorg = result->height < oldHeight ||
+                    (query->get_block_by_height(oldHeight, prior) && prior.get_hash() != oldTip);
+            }
+            result->ibd = info && info->is_initial_block_download();
+            if ((!hadTip && (wallet->get_key_count() > 0 || !wallet->get_watch_only_addresses().empty())) ||
+                (postIbd && !result->ibd) || result->reorg) {
+                const auto scanned = wallet->get_last_scanned_height();
+                geocoin::Hash256 anchor{};
+                const bool matches = scanned <= result->height &&
+                    chain->get_active_block_hash(scanned, anchor) &&
+                    anchor == wallet->get_last_scanned_block_hash();
+                result->rescan = !matches || scanned < result->height;
+                result->rescanFrom = matches ? scanned + 1 : 0;
+            }
+            const auto pending = query ? query->get_mempool_transactions() :
+                std::vector<geocoin::core::Transaction>{};
+            bool valid = true;
+            auto sum = [&](const auto& addresses, size_t offset) {
+                for (const auto& address : addresses) {
+                    const auto funds = geocoin::wallet::classify_address_funds(*chain, address, pending);
+                    const geocoin::Amount amounts[] = {funds.available, funds.unconfirmed, funds.immature};
+                    for (size_t i = 0; i < 3; ++i) {
+                        geocoin::Amount next = 0;
+                        if (!funds.valid || amounts[i] < 0 ||
+                            !geocoin::checked_add_amount(result->balances[offset + i], amounts[i], next)) {
+                            valid = false;
+                            return;
+                        }
+                        result->balances[offset + i] = next;
+                    }
+                }
+            };
+            sum(wallet->get_spendable_addresses(), 0);
+            if (valid) sum(wallet->get_watch_only_addresses(), 3);
+            if (!valid) {
+                std::fill(std::begin(result->balances), std::end(result->balances), 0);
+                qWarning() << "Wallet balance snapshot rejected invalid or overflowing amounts";
             }
         }
+        result->transactions = TransactionTableModel::readSnapshot(wallet, chain, previous);
+    });
+    if (!refreshPending_) {
+        emit walletHistoryError(tr("Wallet refresh could not start [wallet_refresh_start_failed]. The previous snapshot is retained."));
+        return;
     }
+    refreshTimer_->start();
+}
 
-    // IBD-aware one-time rescan: during IBD UI per-tx notifications may be suppressed.
-    // When IBD finishes, do one scan to catch anything missed.
-    bool isIbd = false;
-    if (nodeServices_.info) {
-        isIbd = nodeServices_.info->is_initial_block_download();
+void WalletModel::applyWalletRefresh(const RefreshSnapshot& snapshot)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    const bool spendableChanged = cachedBalance != snapshot.balances[0] ||
+        cachedUnconfirmedBalance != snapshot.balances[1] || cachedImmatureBalance != snapshot.balances[2];
+    const bool watchedChanged = cachedWatchOnlyBalance != snapshot.balances[3] ||
+        cachedWatchOnlyUnconfirmedBalance != snapshot.balances[4] ||
+        cachedWatchOnlyImmatureBalance != snapshot.balances[5];
+    cachedBalance = snapshot.balances[0];
+    cachedUnconfirmedBalance = snapshot.balances[1];
+    cachedImmatureBalance = snapshot.balances[2];
+    cachedWatchOnlyBalance = snapshot.balances[3];
+    cachedWatchOnlyUnconfirmedBalance = snapshot.balances[4];
+    cachedWatchOnlyImmatureBalance = snapshot.balances[5];
+    if (spendableChanged) emit balanceChanged(cachedBalance, cachedUnconfirmedBalance, cachedImmatureBalance);
+    if (watchedChanged) emit watchOnlyBalanceChanged(cachedWatchOnlyBalance,
+        cachedWatchOnlyUnconfirmedBalance, cachedWatchOnlyImmatureBalance);
+    transactionTableModel->applySnapshot(snapshot.transactions);
+}
+
+void WalletModel::finishWalletRefresh()
+{
+    if (quiescing_ || !refreshPending_ || !refreshAction_.reapIfFinished()) return;
+    refreshTimer_->stop();
+    refreshPending_ = false;
+    if (refreshGeneration_ != walletGeneration_) return;
+    if (refreshAction_.failed()) {
+        emit walletHistoryError(tr("Wallet refresh failed [wallet_refresh_failed]. The previous snapshot is retained."));
+    } else {
+        const auto snapshot = refreshSnapshot_;
+        cachedNumBlocks = snapshot->height;
+        cachedBestBlockHash_ = snapshot->tip;
+        haveCachedBestBlockHash_ = snapshot->haveTip;
+        if (lastIbdState && !snapshot->ibd) didPostIbdRescan = true;
+        lastIbdState = snapshot->ibd;
+        applyWalletRefresh(*snapshot);
+        if (snapshot->rescan) startWalletRescanAsync(snapshot->rescanFrom, snapshot->height);
     }
-    if (lastIbdState && !isIbd && !didPostIbdRescan &&
-        (wallet_->get_key_count() > 0 || !wallet_->get_watch_only_addresses().empty())) {
-        geocoin::Height wallet_best_height = wallet_->get_last_scanned_height();
-        geocoin::Hash256 active_anchor{};
-        const bool anchor_matches = wallet_best_height <= current_height &&
-            chain_state_->get_active_block_hash(wallet_best_height, active_anchor) &&
-            active_anchor == wallet_->get_last_scanned_block_hash();
-        if (!anchor_matches) {
-            startWalletRescanAsync(0);
-        } else if (wallet_best_height < current_height) {
-            startWalletRescanAsync(wallet_best_height + 1);
-        }
-        didPostIbdRescan = true;
-    }
-    lastIbdState = isIbd;
-
-    if (activeChainReorg) {
-        qInfo() << "[WalletModel] Active chain changed by reorg; wallet keys are kept and balance will be rescanned";
-        if (wallet_->get_key_count() > 0 || !wallet_->get_watch_only_addresses().empty()) {
-            startWalletRescanAsync(0);
-        }
-        transactionRefreshPending_ = true;
-        fForceCheckBalanceChanged = true;
-    }
-
-    if (have_current_best_hash) {
-        cachedBestBlockHash_ = current_best_hash;
-        haveCachedBestBlockHash_ = true;
-    }
-
-    const bool heightChanged = current_height != cachedNumBlocks;
-    if (fForceCheckBalanceChanged || heightChanged || activeChainReorg) {
-        fForceCheckBalanceChanged = false;
-        cachedNumBlocks = current_height;
-
-        // Balance can change on every block (confirmations, maturity, mempool state).
-        updateBalance();
-
-        // Rebuild the transaction table only when wallet data changed, or when
-        // a pending transaction might have switched state after a new block.
-        const bool shouldRefreshTransactions =
-            transactionRefreshPending_ ||
-            (heightChanged && transactionTableModel && transactionTableModel->hasPendingTransactions()) ||
-            isRescanInProgress();
-
-        if (shouldRefreshTransactions && transactionTableModel) {
-            transactionTableModel->updateTransactions();
-            transactionRefreshPending_ = false;
-        }
-    }
+    if (refreshRequested_) pollBalanceChanged();
 }
 
 void WalletModel::updateTransaction()
 {
+    if (quiescing_) return;
     // Balance and number of transactions might have changed
     // Ставим флаг: обновить данные на следующем тике таймера.
     fForceCheckBalanceChanged = true;
     transactionRefreshPending_ = true;
+    updateBalance();
 }
 
 void WalletModel::notifyTransactionChanged(const QByteArray &txData, int height, quint64 timestamp)
@@ -2099,15 +2217,19 @@ void WalletModel::subscribeToCoreSignals()
     walletScanFinishedConnection_.disconnect();
 
     // Keep an explicit connection handle so unsubscribe is deterministic across toolchains.
+    const auto generation = walletGeneration_;
     walletTransactionChangedConnection_ = wallet_->NotifyTransactionChanged.connect(
-        [this](geocoin::wallet::Wallet* wallet, const geocoin::Hash256& hash) {
-            NotifyTransactionChanged(this, wallet, hash);
+        [this, generation](geocoin::wallet::Wallet*, const geocoin::Hash256&) {
+            QMetaObject::invokeMethod(this, [this, generation]() {
+                if (!quiescing_ && generation == walletGeneration_) updateTransaction();
+            }, Qt::QueuedConnection);
         }
     );
     walletScanFinishedConnection_ = wallet_->NotifyScanFinished.connect(
-        [this](geocoin::wallet::Wallet*, const geocoin::wallet::WalletScanResult& result) {
+        [this, generation](geocoin::wallet::Wallet*, const geocoin::wallet::WalletScanResult& result) {
             const QString error = QString::fromStdString(result.error);
-            QMetaObject::invokeMethod(this, [this, error]() {
+            QMetaObject::invokeMethod(this, [this, error, generation]() {
+                if (quiescing_ || generation != walletGeneration_) return;
                 emit walletHistoryError(error);
                 updateTransaction();
             }, Qt::QueuedConnection);
@@ -2723,6 +2845,12 @@ bool WalletModel::importPrivateKey(const QString &privateKeyHex, const QString &
         wallet_ = std::make_shared<geocoin::wallet::Wallet>();
     }
     if (walletFilePath_.isEmpty()) return false;
+    std::unique_ptr<QLockFile> backupLock;
+    if (!addToExisting) {
+        QString error;
+        backupLock = lockBackupDestination(walletFilePath_, &error);
+        if (!backupLock) { emit walletSaveError(error); return false; }
+    }
 
     geocoin::bytes private_key;
     geocoin::utils::ScopedContainerCleanser<geocoin::bytes> privateKeyCleanser(private_key);

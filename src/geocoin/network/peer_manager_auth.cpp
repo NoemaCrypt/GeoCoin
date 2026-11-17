@@ -652,6 +652,7 @@ void PeerManager::handle_response(
             ctx.peer->update_info(info);
 
             // Отправляем VERACK
+            record_outbound_result_unlocked(ctx.peer->get_address(), true, false, "authenticated");
             if (SyncDebugEnabled()) {
                 GEO_LOG_DEBUG("peers", "  Sending VERACK...");
             }

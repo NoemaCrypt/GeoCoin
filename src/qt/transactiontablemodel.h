@@ -8,10 +8,13 @@
 #include <QAbstractTableModel>
 #include <QList>
 #include <QDateTime>
+#include <memory>
 
 #include "geocoin/core/transaction.hpp"
 
 class WalletModel;
+namespace geocoin::wallet { class Wallet; }
+namespace geocoin::state { class ChainState; }
 
 /** UI model for the transaction table of a wallet */
 class TransactionTableModel : public QAbstractTableModel
@@ -50,9 +53,7 @@ public:
 public Q_SLOTS:
     void updateTransactions();
 
-private:
-    WalletModel *walletModel;
-
+public:
     struct TransactionRecord {
         QString txHash;
         QDateTime dateTime;
@@ -65,10 +66,17 @@ private:
         QString status;
         bool addressResolved = false;
     };
+    using Snapshot = QList<TransactionRecord>;
+    static Snapshot readSnapshot(std::shared_ptr<geocoin::wallet::Wallet> wallet,
+        std::shared_ptr<geocoin::state::ChainState> chainState, const Snapshot& previous);
+    Snapshot snapshot() const { return transactions; }
+    void applySnapshot(Snapshot snapshot);
+
+private:
+    WalletModel *walletModel;
 
     QList<TransactionRecord> transactions;
 
-    void refreshWallet();
     QString formatTxStatus(const TransactionRecord &rec) const;
     QString formatTxType(int type) const;
 };

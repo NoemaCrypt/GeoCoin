@@ -19,6 +19,7 @@
 #include <utility>
 #include "geocoin/utils/varint.hpp"
 #include "geocoin/utils/bytes.hpp"
+#include "geocoin/utils/filesystem.hpp"
 #include "geocoin/consensus/consensus.hpp"
 #include "geocoin/crypto/geo_area.hpp"
 #include "geocoin/utils/logger.hpp"
@@ -336,21 +337,28 @@ bool BlockStorage::open(
     StorageOptions options
 ) {
     if (chain_db_ || index_db_) {
+        last_open_error_ = "Block storage is already open";
         return false;
     }
 
     path_ = path;
     backend_ = backend;
     options_ = options;
+    last_open_error_.clear();
 
-    chaindata_path_ = (std::filesystem::path(path_) / "chaindata" / "blocks").string();
-    index_path_ = (std::filesystem::path(path_) / "index" / "blocks").string();
+    const auto chain_path = utils::path_from_utf8(path_ + "/chaindata/blocks");
+    const auto index_path = utils::path_from_utf8(path_ + "/index/blocks");
+    const auto chain_utf8 = chain_path.u8string();
+    const auto index_utf8 = index_path.u8string();
+    chaindata_path_.assign(chain_utf8.begin(), chain_utf8.end());
+    index_path_.assign(index_utf8.begin(), index_utf8.end());
 
-    std::filesystem::create_directories(chaindata_path_);
-    std::filesystem::create_directories(index_path_);
+    std::filesystem::create_directories(chain_path);
+    std::filesystem::create_directories(index_path);
 
     if (!ensure_backend_marker(chaindata_path_, backend) ||
         !ensure_backend_marker(index_path_, backend)) {
+        last_open_error_ = "Block storage paths '" + chaindata_path_ + "', '" + index_path_ + "': backend marker incompatible or inaccessible";
         return false;
     }
 
@@ -360,6 +368,7 @@ bool BlockStorage::open(
 
     if (!chain_db_->open(chaindata_path_, options_) ||
         !index_db_->open(index_path_, options_)) {
+        last_open_error_ = !chain_db_->last_open_error().empty() ? chain_db_->last_open_error() : index_db_->last_open_error();
         close();
         return false;
     }

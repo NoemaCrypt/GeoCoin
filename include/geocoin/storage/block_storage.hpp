@@ -108,6 +108,7 @@ public:
      * @return true если открыто
      */
     bool is_open() const;
+    const std::string& last_open_error() const { return last_open_error_; }
 
     /**
      * @brief Index/chaindata dual-write is incomplete or had an uncertain result.
@@ -469,6 +470,7 @@ private:
     std::unique_ptr<RocksDBStore> chain_db_;
     std::unique_ptr<RocksDBStore> index_db_;
     std::string path_;
+    std::string last_open_error_;
     std::string chaindata_path_;
     std::string index_path_;
     StorageBackend backend_{StorageBackend::ROCKSDB};

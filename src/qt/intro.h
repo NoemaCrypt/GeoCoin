@@ -17,7 +17,7 @@ QT_END_NAMESPACE
 
 /** Introduction screen (pre-GUI startup).
   Allows the user to choose a data directory,
-  in which the wallet and block chain will be stored.
+  in which the block chain will be stored (wallets can live elsewhere).
  */
 class Intro : public QDialog
 {
@@ -52,6 +52,8 @@ private:
     QPushButton *ellipsisButton;
     QLabel *freeSpaceLabel;
     QLabel *warningLabel;
+    bool spaceQueryRunning = false;
+    QString pendingSpacePath;
 
     void setupUi();
     void updateFreeSpace();

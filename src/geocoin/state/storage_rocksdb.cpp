@@ -97,11 +97,13 @@ RocksDBStorage::~RocksDBStorage() {
 }
 
 bool RocksDBStorage::open() {
+    last_open_error_.clear();
     if (db_) {
         return true;
     }
 
     if (!storage::backend::ensure_backend_marker(db_path_, "rocksdb", "state storage")) {
+        last_open_error_ = "RocksDB path '" + db_path_ + "': backend marker is incompatible, missing on an existing database, or inaccessible";
         return false;
     }
 
@@ -140,6 +142,7 @@ bool RocksDBStorage::open() {
     std::unique_ptr<rocksdb::DB> db;
     rocksdb::Status status = storage::backend::open_rocksdb(options, db_path_, db);
     if (!status.ok()) {
+        last_open_error_ = "RocksDB path '" + db_path_ + "': " + status.ToString();
         GEO_LOG_ERROR("storage", "Failed to open RocksDB: " << status.ToString());
         return false;
     }
@@ -147,6 +150,7 @@ bool RocksDBStorage::open() {
     db_ = std::move(db);
     if (!address_db_path_.empty()) {
         if (!storage::backend::ensure_backend_marker(address_db_path_, "rocksdb", "address storage")) {
+            last_open_error_ = "RocksDB path '" + address_db_path_ + "': backend marker is incompatible or inaccessible";
             db_.reset();
             return false;
         }
@@ -154,6 +158,7 @@ bool RocksDBStorage::open() {
         std::unique_ptr<rocksdb::DB> address_db;
         status = storage::backend::open_rocksdb(options, address_db_path_, address_db);
         if (!status.ok()) {
+            last_open_error_ = "RocksDB path '" + address_db_path_ + "': " + status.ToString();
             GEO_LOG_ERROR("storage", "Failed to open RocksDB address storage: " << status.ToString());
             db_.reset();
             return false;
@@ -161,8 +166,10 @@ bool RocksDBStorage::open() {
         address_db_ = std::move(address_db);
     }
 
-    if (!storage::backend::ensure_format(db_.get(), options_) ||
-        (address_db_ && !storage::backend::ensure_format(address_db_.get(), options_))) {
+    std::string format_error;
+    if (!storage::backend::ensure_format(db_.get(), options_, {}, &format_error) ||
+        (address_db_ && !storage::backend::ensure_format(address_db_.get(), options_, {}, &format_error))) {
+        last_open_error_ = "RocksDB paths '" + db_path_ + "', '" + address_db_path_ + "': " + format_error;
         close();
         return false;
     }

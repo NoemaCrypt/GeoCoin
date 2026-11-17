@@ -1,5 +1,6 @@
 #include "geocoin/state/storage.hpp"
 #include "geocoin/utils/logger.hpp"
+#include "geocoin/utils/filesystem.hpp"
 #include "geocoin/storage/backend_support.hpp"
 
 #include <filesystem>
@@ -18,21 +19,24 @@ std::unique_ptr<Storage> StorageFactory::create_split(
     Type type,
     const std::string& chaindata_path,
     const std::string& addresses_path,
-    StorageOptions options
+    StorageOptions options,
+    std::string* error
 ) {
+    if (error) error->clear();
     switch (type) {
         case Type::MEMORY:
             return std::make_unique<MemoryStorage>();
         case Type::ROCKSDB: {
             if (!chaindata_path.empty()) {
-                std::filesystem::create_directories(std::filesystem::path(chaindata_path).parent_path());
+                std::filesystem::create_directories(utils::path_from_utf8(chaindata_path).parent_path());
             }
             if (!addresses_path.empty()) {
-                std::filesystem::create_directories(std::filesystem::path(addresses_path).parent_path());
+                std::filesystem::create_directories(utils::path_from_utf8(addresses_path).parent_path());
             }
             auto storage = std::make_unique<RocksDBStorage>(chaindata_path, addresses_path, options);
             if (!storage->open()) {
-                GEO_LOG_ERROR("storage", "Failed to open RocksDB storage at: " << chaindata_path);
+                if (error) *error = storage->last_open_error();
+                GEO_LOG_ERROR("storage", storage->last_open_error());
                 return nullptr;
             }
             return storage;

@@ -191,9 +191,7 @@ public:
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override
     {
-        if (!event || (event->type() != QEvent::Show &&
-                       event->type() != QEvent::Polish &&
-                       event->type() != QEvent::ChildAdded)) {
+        if (!event || event->type() != QEvent::Show) {
             return QObject::eventFilter(watched, event);
         }
 
@@ -216,17 +214,16 @@ protected:
             return QObject::eventFilter(watched, event);
         }
 
-        if (window->property("geocoinLightFileDialogScheduled").toBool()) {
+        if (window->property("geocoinLightFileDialogStyled").toBool()) {
             return QObject::eventFilter(watched, event);
         }
 
-        window->setProperty("geocoinLightFileDialogScheduled", true);
+        window->setProperty("geocoinLightFileDialogStyled", true);
         QPointer<QWidget> dialog(window);
         QTimer::singleShot(0, window, [dialog]() {
             if (!dialog) {
                 return;
             }
-            dialog->setProperty("geocoinLightFileDialogScheduled", false);
             applyLightFileDialogTheme(dialog);
         });
 
@@ -240,6 +237,7 @@ static bool argvHasSmokeTest(int argc, char *argv[])
 {
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--smoke-test" ||
+            std::string(argv[i]) == "--gui-e2e-test" ||
             std::string(argv[i]) == "--ui-layout-test") {
             return true;
         }
@@ -284,63 +282,6 @@ static void writeSmokeTrace(bool enabled, const QString& message)
         << " " << message << '\n';
 }
 
-static bool requestStartupWalletPassword(const QString& walletPath, QString& password)
-{
-    password.clear();
-    if (!QFileInfo::exists(walletPath) && !QFileInfo::exists(walletPath + QStringLiteral(".bak"))) {
-        return true;
-    }
-
-    // Unprotected wallets open without interrupting startup.  A failed empty
-    // password probe means either encryption or damage; the real load in the
-    // core thread remains authoritative.
-    {
-        geocoin::wallet::Wallet probe;
-        if (probe.load_from_file(walletPath.toStdString(), std::string())) {
-            return true;
-        }
-    }
-
-    QString candidate = qEnvironmentVariable("GEOCOIN_QT_WALLET_PASSWORD");
-    GUIUtil::ScopedQStringCleanser candidateCleanser(candidate);
-    bool triedEnvironment = !candidate.isEmpty();
-
-    while (true) {
-        if (candidate.isEmpty()) {
-            QInputDialog dialog;
-            dialog.setWindowTitle(QObject::tr("Unlock Wallet"));
-            dialog.setLabelText(QObject::tr(
-                "wallet.dat is password protected. Enter its passphrase to continue:"));
-            dialog.setTextEchoMode(QLineEdit::Password);
-            dialog.setStyleSheet(GUIUtil::dialogStyleSheet(GUIUtil::currentTheme()));
-            if (dialog.exec() != QDialog::Accepted) {
-                return false;
-            }
-            candidate = dialog.textValue();
-        }
-
-        std::string candidateBytes = candidate.toStdString();
-        GUIUtil::ScopedStringCleanser candidateBytesCleanser(candidateBytes);
-        geocoin::wallet::Wallet probe;
-        const bool unlocked = probe.load_from_file(walletPath.toStdString(), candidateBytes);
-        GUIUtil::cleanseString(candidateBytes);
-        if (unlocked) {
-            password = candidate;
-            GUIUtil::cleanseQString(candidate);
-            return true;
-        }
-
-        GUIUtil::cleanseQString(candidate);
-        if (triedEnvironment) {
-            triedEnvironment = false;
-        }
-        GUIUtil::showStyledMessageBox(
-            nullptr,
-            QMessageBox::Warning,
-            QObject::tr("Unlock Wallet"),
-            QObject::tr("The passphrase is incorrect, or wallet.dat is damaged."));
-    }
-}
 
 // Signal handler for Ctrl+C (SIGINT) and SIGTERM
 static void handleShutdownSignal(int sig)
@@ -363,6 +304,9 @@ int main(int argc, char *argv[])
     writeEarlySmokeTrace(earlySmokeTest, "before QApplication");
 
     QTemporaryDir testSettingsDir;
+    // These must outlive the application, its core thread and every DB owner.
+    QTemporaryDir smokeTempDir;
+    std::unique_ptr<QLockFile> instanceLock;
     if (earlySmokeTest) {
         if (!testSettingsDir.isValid()) {
             return 1;
@@ -388,6 +332,10 @@ int main(int argc, char *argv[])
     bool smokeTest = false;
     bool guiE2eTest = false;
     QString explicitDataDir;
+    QString explicitWalletPath;
+    QString selectedNetwork = QStringLiteral("degree");
+    quint16 selectedP2pPort = 0;
+    QString activationManifest;
 
     // Setup signal handlers for graceful shutdown
     std::signal(SIGINT, handleShutdownSignal);   // Ctrl+C
@@ -436,6 +384,40 @@ int main(int argc, char *argv[])
         else if (arg == "--gui-e2e-test") {
             guiE2eTest = true;
         }
+        else if (arg.startsWith("--wallet=") || arg.startsWith("-wallet=")) {
+            explicitWalletPath = arg.mid(arg.indexOf(QLatin1Char('=')) + 1);
+            if (explicitWalletPath.isEmpty()) { qCritical() << "--wallet requires a filename"; return 1; }
+        }
+        else if (arg == "--wallet" || arg == "-wallet") {
+            if (i + 1 >= args.size() || args[i + 1].startsWith(QLatin1Char('-'))) {
+                qCritical() << "--wallet requires a filename";
+                return 1;
+            }
+            explicitWalletPath = args[++i];
+        }
+        else if (arg.startsWith("--network=") || arg == "--network") {
+            if (arg == "--network" && i + 1 >= args.size()) return 1;
+            selectedNetwork = arg == "--network" ? args[++i] : arg.mid(QStringLiteral("--network=").size());
+            if (selectedNetwork == "loadnet") selectedNetwork = QStringLiteral("degree-load");
+            if (selectedNetwork == "testnet") selectedNetwork = QStringLiteral("degree-test");
+            if (selectedNetwork == "mainnet") selectedNetwork = QStringLiteral("degree");
+            if (selectedNetwork != "degree" && selectedNetwork != "degree-test" && selectedNetwork != "degree-load") {
+                qCritical() << "Invalid --network";
+                return 1;
+            }
+        }
+        else if (arg.startsWith("--p2p-port=") || arg == "--p2p-port") {
+            if (arg == "--p2p-port" && i + 1 >= args.size()) return 1;
+            bool ok = false;
+            const uint port = (arg == "--p2p-port" ? args[++i] : arg.mid(QStringLiteral("--p2p-port=").size())).toUInt(&ok);
+            if (!ok || port == 0 || port > 65535) { qCritical() << "Invalid --p2p-port"; return 1; }
+            selectedP2pPort = static_cast<quint16>(port);
+        }
+        else if (arg.startsWith("--activation-manifest=") || arg == "--activation-manifest") {
+            if (arg == "--activation-manifest" && i + 1 >= args.size()) return 1;
+            activationManifest = arg == "--activation-manifest" ? args[++i] : arg.mid(QStringLiteral("--activation-manifest=").size());
+            if (activationManifest.isEmpty()) return 1;
+        }
         else if (arg.startsWith("--data-dir=")) {
             explicitDataDir = arg.mid(QStringLiteral("--data-dir=").size());
         }
@@ -473,7 +455,6 @@ int main(int argc, char *argv[])
     app.setSmokeTestMode(smokeTest);
     app.setGuiE2eTestMode(guiE2eTest);
 
-    QTemporaryDir smokeTempDir;
     QString dataDir;
     if (smokeTest || guiE2eTest) {
         if (!explicitDataDir.isEmpty() && !app.property("geocoinUiLayoutTest").toBool()) {
@@ -506,9 +487,10 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    QLockFile instanceLock(dataDir + "/geocoin-core.lock");
-    instanceLock.setStaleLockTime(0);
-    if (!instanceLock.tryLock(0)) {
+    dataDir = QDir(dataDir).canonicalPath();
+    instanceLock = std::make_unique<QLockFile>(QDir(dataDir).filePath(QStringLiteral("geocoin-core.lock")));
+    instanceLock->setStaleLockTime(0);
+    if (!instanceLock->tryLock(0)) {
         QMessageBox::critical(
             nullptr,
             QObject::tr("GeoCoin"),
@@ -517,12 +499,11 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    QString startupWalletPassword;
-    GUIUtil::ScopedQStringCleanser startupWalletPasswordCleanser(startupWalletPassword);
-    const QString startupWalletPath = QDir(dataDir).filePath(QStringLiteral("wallet.dat"));
-    if (!smokeTest && !requestStartupWalletPassword(startupWalletPath, startupWalletPassword)) {
-        return 0;
-    }
+    app.setStartupWalletPath(explicitWalletPath);
+    app.setNetwork(selectedNetwork);
+    app.setP2pPort(selectedP2pPort);
+    app.setActivationManifestPath(activationManifest);
+    QString startupWalletPassword = qEnvironmentVariable("GEOCOIN_QT_WALLET_PASSWORD");
     app.setStartupWalletPassword(startupWalletPassword);
     GUIUtil::cleanseQString(startupWalletPassword);
 

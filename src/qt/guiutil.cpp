@@ -4,6 +4,7 @@
 
 #include "guiutil.h"
 #include "geocoin/utils/secret_file.hpp"
+#include "geocoin/node/node_types.hpp"
 
 #include <QApplication>
 #include <QClipboard>
@@ -21,6 +22,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QImage>
+#include <QIcon>
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
@@ -609,6 +611,7 @@ QString windowStyleSheet(const QString& theme)
         "  background-position: center;"
         "  background-repeat: no-repeat;"
         "  background-color: %2;"
+        "  border: 1px solid %4;"
         "}"
         "QMenuBar, QToolBar, QStatusBar { background-color: %2; color: %3; border-color: %4; }"
         "QMenuBar::item { background-color: transparent; color: %3; padding: 5px 10px; font-weight: bold; }"
@@ -623,6 +626,35 @@ QString windowStyleSheet(const QString& theme)
         + glassListStyleSheet(theme)
         + spinBoxStyleSheet(theme)
         + glassScrollBarStyle(c);
+}
+
+QIcon themeToggleIcon(bool dark)
+{
+    QPixmap image(40, 40);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.scale(2, 2);
+    const QColor color(dark ? "#E6BE68" : "#302511");
+    painter.setPen(QPen(color, 1.5));
+    painter.setBrush(Qt::NoBrush);
+    if (dark) {
+        painter.drawEllipse(QPointF(10, 10), 3.5, 3.5);
+        for (int i = 0; i < 8; ++i) {
+            painter.save();
+            painter.translate(10, 10);
+            painter.rotate(i * 45);
+            painter.drawLine(QPointF(0, -6), QPointF(0, -8));
+            painter.restore();
+        }
+    } else {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        painter.drawEllipse(QRectF(3, 3, 14, 14));
+        painter.setCompositionMode(QPainter::CompositionMode_Clear);
+        painter.drawEllipse(QRectF(8, 1, 12, 12));
+    }
+    return QIcon(image);
 }
 
 void applyApplicationTheme(QApplication* app, const QString& theme)
@@ -814,20 +846,8 @@ QString formatHashrate(double hashrate)
 
 int availableCpuThreads()
 {
-#ifdef _WIN32
-    DWORD total = 0;
-    const WORD groups = GetActiveProcessorGroupCount();
-    for (WORD group = 0; group < groups; ++group) {
-        total += GetActiveProcessorCount(group);
-    }
-    if (total > 0) {
-        return static_cast<int>(std::min<DWORD>(
-            total,
-            static_cast<DWORD>(std::numeric_limits<int>::max())
-        ));
-    }
-#endif
-    return std::max(1, QThread::idealThreadCount());
+    return static_cast<int>((std::min)(geocoin::node::cpu_mining_thread_limit(),
+                                      static_cast<size_t>((std::numeric_limits<int>::max)())));
 }
 
 QString formatDuration(int secs)

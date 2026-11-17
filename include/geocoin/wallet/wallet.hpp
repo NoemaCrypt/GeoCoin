@@ -22,6 +22,49 @@
 
 namespace geocoin::wallet {
 
+enum class WalletFileFormat { UNKNOWN, LEGACY_V11, LEGACY_V12, NATIVE_V13, VAULT_GEOV };
+enum class WalletLoadError {
+    NONE, IO_ERROR, INVALID_FORMAT, UNSUPPORTED_VERSION, PASSWORD_REQUIRED,
+    AUTHENTICATION_FAILED, CORRUPT_DATA, RESOURCE_LIMIT
+};
+
+struct WalletLoadResult {
+    WalletLoadError error = WalletLoadError::NONE;
+    WalletFileFormat format = WalletFileFormat::UNKNOWN;
+    uint32_t version = 0;
+    bool migration_needed = false;
+    bool encrypted = false;
+    bool authenticated = false; // GEOV authenticates sealed keys, not its public metadata.
+    bool recovered_from_backup = false;
+    std::string source_path;
+    bool ok() const noexcept { return error == WalletLoadError::NONE; }
+};
+
+struct WalletMigrationOptions {
+    bool confirmed = false;
+    std::string output_path; // Empty means replace the source.
+    std::string backup_path; // Empty: output + ".pre-v13.bak" (source if in-place); never overwritten.
+};
+
+enum class WalletMigrationError {
+    NONE, CONFIRMATION_REQUIRED, LOAD_FAILED, NOT_NEEDED, INVALID_PATH,
+    DESTINATION_EXISTS, BACKUP_FAILED, WRITE_FAILED, VALIDATION_FAILED,
+    SOURCE_CHANGED, COMMIT_FAILED
+};
+
+const char* wallet_load_error_name(WalletLoadError error) noexcept;
+const char* wallet_migration_error_name(WalletMigrationError error) noexcept;
+
+struct WalletMigrationResult {
+    WalletMigrationError error = WalletMigrationError::NONE;
+    WalletLoadResult source;
+    std::string output_path;
+    std::string backup_path;
+    bool committed = false;
+    bool durable = false;
+    bool ok() const noexcept { return error == WalletMigrationError::NONE && committed; }
+};
+
 enum class WalletScanStatus { COMPLETE, READ_ERROR, HISTORY_PRUNED, CHAIN_CHANGED, NO_ADDRESSES };
 
 struct WalletScanResult {
@@ -426,6 +469,20 @@ public:
      */
     bool load_from_file(const std::string& filename, const std::string& password);
 
+    // Persistence filenames and result paths are UTF-8, including on Windows.
+    // Parse/authenticate completely before replacing state. No implicit backup recovery.
+    // Legacy loads are read-only until explicitly migrated. GEOV may open locked
+    // without a password; authenticated is false for that public-metadata-only load.
+    WalletLoadResult load_from_file_result(const std::string& filename,
+        const std::string& password, bool allow_backup = false);
+    WalletLoadResult last_load_result() const;
+
+    // Caller must hold exclusive source/output ownership (e.g. Qt's wallet locks).
+    // No password/security change. Pre-commit failure leaves source bytes unchanged.
+    // A committed result with durable=false must not be treated as an uncommitted failure.
+    static WalletMigrationResult migrate_file(const std::string& filename,
+        const std::string& password, const WalletMigrationOptions& options);
+
     /**
      * @brief Получить основной адрес кошелька
      *
@@ -622,10 +679,14 @@ private:
     bool verify_vault_password_locked(const std::string& password) const;
     bool refresh_vault_keys_locked();
     bool save_vault_locked(const std::string& filename, bool preserve_backup) const;
-    bool load_vault_locked(const std::string& filename, const std::string& password);
+    bool load_vault_locked(const std::string& filename, const std::string& password,
+        WalletLoadResult& result);
     mutable std::mutex mutex_;
     mutable std::string file_path_;
     mutable SaveStatus last_save_status_{SaveStatus::FAILED};
+    WalletLoadResult last_load_result_;
+    WalletFileFormat loaded_format_ = WalletFileFormat::UNKNOWN;
+    bool loaded_encrypted_ = false;
     // Serialize history scans and chain events without holding mutex_ during disk reads.
     std::recursive_mutex scan_mutex_;
     WalletScanResult last_scan_result_;
@@ -698,7 +759,8 @@ private:
         const std::string& filename,
         const std::string& password,
         bool preserve_backup,
-        bool replace_password_verifier
+        bool replace_password_verifier,
+        bool preserve_password_verifier = false
     ) const;
 };
 

@@ -610,7 +610,8 @@ bool connect_authenticated_pair(
     geocoin::network::PeerManager& outbound,
     geocoin::network::PeerManager& inbound,
     std::string& outbound_address,
-    std::string& inbound_address
+    std::string& inbound_address,
+    uint32_t prior_failures = 0
 ) {
     const geocoin::bytes outbound_key = make_key(0xa1);
     const geocoin::bytes inbound_key = make_key(0xb1);
@@ -627,6 +628,8 @@ bool connect_authenticated_pair(
     }
 
     outbound_address = listener.address();
+    geocoin::network::PeerManagerTestAccess::seed_outbound_attempt(
+        outbound, outbound_address, true, prior_failures, std::chrono::seconds(1));
     if (!outbound.add_outbound_peer(outbound_address, outbound_key, true)) {
         check(false, "outbound PeerManager connects to local listener");
         return false;
@@ -1190,6 +1193,59 @@ void test_outbound_self_connect_and_backoff_diagnostics() {
         check(it->last_error == "tcp-connect-failed" || it->last_error == "backoff",
               "outbound diagnostics record failure reason");
     }
+}
+
+void test_failed_handshake_preserves_outbound_backoff() {
+    geocoin::network::PeerManager peers;
+    const auto key = make_key(0x83);
+    LocalTcpListener listener;
+    if (!listener) {
+        check(false, "loopback listener is available for failed handshake retries");
+        return;
+    }
+    const auto address = listener.address();
+    auto attempt_info = [&]() {
+        const auto diagnostics = peers.get_connection_diagnostics();
+        for (const auto& attempt : diagnostics.outbound_attempts)
+            if (attempt.address == address) return attempt;
+        check(false, "handshake retry has outbound diagnostics");
+        return geocoin::network::PeerOutboundAttemptInfo{};
+    };
+    for (uint32_t attempt = 1; attempt <= 3; ++attempt) {
+        // Explicit onetry bypasses the deadline, not an in-flight handshake.
+        if (!peers.add_outbound_peer(address, key, true, true)) {
+            check(false, "owned listener accepts a bounded handshake attempt");
+            return;
+        }
+        const auto pending = attempt_info();
+        check(pending.fail_count == attempt - 1 && pending.in_progress,
+              "TCP connect retains failure history until authentication finishes");
+        check(!peers.should_try_outbound(address, true),
+              "manual target cannot overlap an in-flight handshake");
+        std::string remote;
+        int accepted = listener.accept_one(remote);
+        check(accepted >= 0, "owned listener accepts TCP without authenticating");
+        close_fd_if_open(accepted);
+        for (int i = 0; i < 100 && peers.get_peer(address); ++i) {
+            peers.update();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        check(!peers.get_peer(address), "failed handshake transport is removed");
+        const auto failed = attempt_info();
+        check(failed.fail_count == attempt && !failed.in_progress && failed.in_backoff,
+              "consecutive handshake failures accumulate retry history");
+        check(!peers.should_try_outbound(address, true),
+              "manual target honors the first and subsequent retry deadlines");
+    }
+    const bool connected = peers.add_outbound_peer(address, key, true, true);
+    check(connected, "explicit onetry still bypasses retry policy");
+    if (!connected) return;
+    std::string remote;
+    int accepted = listener.accept_one(remote);
+    peers.remove_peer(address);
+    close_fd_if_open(accepted);
+    check(!attempt_info().in_progress,
+          "explicit removal releases an in-flight attempt without losing its history");
 }
 
 void test_inbound_eviction_when_full() {
@@ -1756,12 +1812,22 @@ void test_authenticated_peer_manager_flow_and_relay() {
         }
     );
 
-    if (!connect_authenticated_pair(outbound, inbound, outbound_address, inbound_address)) {
+    if (!connect_authenticated_pair(outbound, inbound, outbound_address, inbound_address, 3)) {
         return;
     }
 
+    const auto pending = outbound.get_connection_diagnostics();
+    check(pending.outbound_attempts.size() == 1 &&
+              pending.outbound_attempts[0].fail_count == 3 && pending.outbound_attempts[0].in_progress,
+          "successful TCP connect does not reset earlier failed handshakes");
+
     check(pump_until_authenticated(outbound, inbound),
           "two PeerManagers complete full challenge-response authentication");
+    const auto completed = outbound.get_connection_diagnostics();
+    check(completed.outbound_attempts.size() == 1 &&
+              completed.outbound_attempts[0].fail_count == 0 && !completed.outbound_attempts[0].in_progress &&
+              completed.outbound_attempts[0].last_error.empty(),
+          "mutual authentication admission resets outbound failure history");
     check(outbound_callbacks == 1, "outbound authenticated callback fires once");
     check(inbound_callbacks == 1, "inbound authenticated callback fires once");
     check(outbound.get_authenticated_peers().size() == 1,
@@ -2678,6 +2744,7 @@ int main() {
     test_outbound_attempt_pruning_preserves_manual_and_added_targets();
     test_temp_ban_bounds_and_ipv6_grouping();
     test_outbound_self_connect_and_backoff_diagnostics();
+    test_failed_handshake_preserves_outbound_backoff();
     test_inbound_eviction_when_full();
     test_wire_policy_disconnects();
     test_reject_message_handler_records_valid_and_malformed_payloads();

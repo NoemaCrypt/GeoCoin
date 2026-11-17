@@ -18,6 +18,7 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QScrollArea>
+#include <QTimer>
 
 WalletFrame::WalletFrame(QWidget *parent) :
     QFrame(parent),
@@ -61,6 +62,9 @@ void WalletFrame::buildPages()
     miningPage = new MiningPage(this);
     connect(miningPage, &MiningPage::gpuMiningChanged,
             this, &WalletFrame::gpuMiningChanged);
+    connect(miningPage, &MiningPage::gpuMiningStopped,
+            this, &WalletFrame::gpuMiningStopped);
+    connect(miningPage, &MiningPage::gpuMiningStopped, this, &WalletFrame::finishLanguageRebuild);
     addPage(miningPage, QStringLiteral("mining"));
 
     multisigPage = new MultisigPage(this);
@@ -108,12 +112,31 @@ void WalletFrame::setCurrentPage(QWidget* page)
 
 void WalletFrame::rebuildForLanguageChange()
 {
-    if (!walletStack) {
-        return;
+    if (!walletStack || languageRebuildPending_) return;
+    languageRebuildPending_ = true;
+    languageRebuildIndex_ = walletStack->currentIndex();
+    walletStack->setEnabled(false);
+    if (!languageRebuildTimer_) {
+        languageRebuildTimer_ = new QTimer(this);
+        languageRebuildTimer_->setInterval(25);
+        connect(languageRebuildTimer_, &QTimer::timeout, this, &WalletFrame::finishLanguageRebuild);
     }
-    const int index = walletStack->currentIndex();
+    languageRebuildTimer_->start();
     stopGpuMining();
-    waitForPendingMiningStop();
+    finishLanguageRebuild();
+}
+
+void WalletFrame::cancelPendingLanguageRebuild()
+{
+    languageRebuildPending_ = false;
+    if (languageRebuildTimer_) languageRebuildTimer_->stop();
+}
+
+void WalletFrame::finishLanguageRebuild()
+{
+    if (!languageRebuildPending_ || isGpuMiningActive() || hasPendingMiningAction()) return;
+    const int index = languageRebuildIndex_;
+    cancelPendingLanguageRebuild();
     pageScrollAreas.clear();
     while (walletStack->count() > 0) {
         QWidget* page = walletStack->widget(0);
@@ -132,10 +155,12 @@ void WalletFrame::rebuildForLanguageChange()
     if (index >= 0 && index < walletStack->count()) {
         walletStack->setCurrentIndex(index);
     }
+    walletStack->setEnabled(true);
 }
 
 WalletFrame::~WalletFrame()
 {
+    cancelPendingLanguageRebuild();
     for (MiningPage* page : findChildren<MiningPage*>()) {
         disconnect(page, nullptr, this, nullptr);
     }
@@ -240,6 +265,11 @@ void WalletFrame::stopGpuMining()
     if (miningPage) {
         miningPage->stopGpuMining();
     }
+}
+
+bool WalletFrame::hasPendingMiningAction() const
+{
+    return miningPage && miningPage->hasPendingMiningAction();
 }
 
 void WalletFrame::waitForPendingMiningStop()

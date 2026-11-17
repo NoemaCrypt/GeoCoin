@@ -18,6 +18,9 @@
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QSettings>
+#include <QThread>
+#include <QTimer>
+#include <memory>
 
 /* Minimum free space (in GB) needed for data directory */
 static const quint64 MINIMUM_FREE_SPACE_GB = 10;
@@ -68,6 +71,8 @@ void Intro::setupUi()
     QHBoxLayout *pathLayout = new QHBoxLayout();
     pathLayout->addSpacing(30);
     dataDirectoryEdit = new QLineEdit(this);
+    dataDirectoryEdit->setObjectName(QStringLiteral("dataDirectoryEdit"));
+    connect(dataDirectoryEdit, &QLineEdit::textChanged, this, [this] { updateFreeSpace(); });
     dataDirectoryEdit->setEnabled(false);
     pathLayout->addWidget(dataDirectoryEdit);
 
@@ -193,7 +198,7 @@ void Intro::on_ellipsisButton_clicked()
     );
 
     if (!dir.isEmpty()) {
-        setDataDirectory(dir + "/geocoin-data");
+        setDataDirectory(dir);
     }
 }
 
@@ -210,23 +215,36 @@ void Intro::on_dataDirCustom_clicked()
 
 void Intro::updateFreeSpace()
 {
-    QString path = dataDirectoryEdit->text();
-    QStorageInfo storage(path);
-
-    if (storage.isValid() && storage.isReady()) {
-        quint64 freeSpaceGB = storage.bytesAvailable() / (1024 * 1024 * 1024);
-
-        QString freeSpaceText = tr("%1 GB of free space available").arg(freeSpaceGB);
-
-        if (freeSpaceGB < MINIMUM_FREE_SPACE_GB) {
-            freeSpaceLabel->setText(freeSpaceText + tr(" (Warning: Less than %1 GB)").arg(MINIMUM_FREE_SPACE_GB));
-            freeSpaceLabel->setStyleSheet("QLabel { color: red; }");
-        } else {
-            freeSpaceLabel->setText(freeSpaceText);
-            freeSpaceLabel->setStyleSheet("QLabel { color: green; }");
+    pendingSpacePath = dataDirectoryEdit->text();
+    if (spaceQueryRunning) return;
+    const QString path = pendingSpacePath;
+    spaceQueryRunning = true;
+    freeSpaceLabel->setText(tr("Checking free space..."));
+    struct SpaceResult { bool valid = false; quint64 bytes = 0; };
+    auto result = std::make_shared<SpaceResult>();
+    // A slow/unavailable mount must not block the directory picker or its destruction.
+    auto* worker = QThread::create([path, result] {
+        QStorageInfo storage(path);
+        result->valid = storage.isValid() && storage.isReady();
+        if (result->valid) result->bytes = static_cast<quint64>(storage.bytesAvailable());
+    });
+    connect(worker, &QThread::finished, this, [this, path, result] {
+        spaceQueryRunning = false;
+        if (pendingSpacePath != path) {
+            updateFreeSpace();
+            return;
         }
-    } else {
-        freeSpaceLabel->setText(tr("Cannot determine free space"));
-        freeSpaceLabel->setStyleSheet("QLabel { color: gray; }");
-    }
+        if (!result->valid) {
+            freeSpaceLabel->setText(tr("Cannot determine free space"));
+            freeSpaceLabel->setStyleSheet("QLabel { color: gray; }");
+            return;
+        }
+        const quint64 gb = result->bytes / (1024 * 1024 * 1024);
+        const QString text = tr("%1 GB of free space available").arg(gb);
+        const bool low = gb < MINIMUM_FREE_SPACE_GB;
+        freeSpaceLabel->setText(low ? text + tr(" (Warning: Less than %1 GB)").arg(MINIMUM_FREE_SPACE_GB) : text);
+        freeSpaceLabel->setStyleSheet(low ? "QLabel { color: red; }" : "QLabel { color: green; }");
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
 }

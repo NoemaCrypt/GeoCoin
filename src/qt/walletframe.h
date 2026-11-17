@@ -17,6 +17,7 @@ class SendCoinsPage;
 class ReceiveCoinsPage;
 class TransactionPage;
 class MiningPage;
+class QTimer;
 class MultisigPage;
 class CorporatePage;
 class NFTPage;
@@ -35,13 +36,16 @@ public:
     bool hasRequiredPages() const;
     int pageCount() const;
     bool isGpuMiningActive() const;
+    bool hasPendingMiningAction() const;
     void stopGpuMining();
     void waitForPendingMiningStop();
     void applyTheme();
     void rebuildForLanguageChange();
+    void cancelPendingLanguageRebuild();
 
 signals:
     void gpuMiningChanged(bool enabled, double hashrate, int acceptedBlocks, int rejectedBlocks);
+    void gpuMiningStopped();
 
 public slots:
     void gotoOverviewPage();
@@ -58,6 +62,10 @@ private:
     void addPage(QWidget* page, const QString& id);
     QScrollArea* scrollAreaForPage(QWidget* page) const;
     void setCurrentPage(QWidget* page);
+    void finishLanguageRebuild();
+    QTimer* languageRebuildTimer_ = nullptr;
+    bool languageRebuildPending_ = false;
+    int languageRebuildIndex_ = 0;
 
     ClientModel *clientModel;
     WalletModel *walletModel;

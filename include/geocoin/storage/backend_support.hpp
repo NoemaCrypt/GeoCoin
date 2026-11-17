@@ -27,7 +27,8 @@ inline constexpr unsigned kFormatVersion = 2;
 inline constexpr const char* kFormatPrefix = "geocoin-storage/2\n";
 std::string format_identity(const StorageOptions& options);
 bool ensure_format(rocksdb::DB* db, const StorageOptions& options,
-                   const std::vector<rocksdb::ColumnFamilyHandle*>& families = {});
+                   const std::vector<rocksdb::ColumnFamilyHandle*>& families = {},
+                   std::string* error = nullptr);
 bool ensure_backend_marker(const std::string& path, const char* backend, const char* label);
 rocksdb::Status open_rocksdb(const rocksdb::Options& options, const std::string& path,
                            std::unique_ptr<rocksdb::DB>& db);

@@ -39,7 +39,7 @@ if(BUILD_TOOLS)
 
     if(BUILD_MINER_CLI)
         add_executable(geocoin-rpc-miner tools/rpc_miner.cpp)
-        target_link_libraries(geocoin-rpc-miner geocoin_crypto)
+        target_link_libraries(geocoin-rpc-miner geocoin_crypto geocoin_cpu)
         geocoin_stage_runtime_dependencies(geocoin-rpc-miner)
     endif()
 

@@ -24,6 +24,9 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTemporaryDir>
+#include <QThread>
+#include <QElapsedTimer>
+#include <QSettings>
 
 #include <iostream>
 #include <limits>
@@ -219,7 +222,7 @@ void checkPagesFollowTheWallet(WalletModel& model, DialogLog& dialogs)
     geocoin::test::expect(directory.isValid(), "wallet directory");
     model.setDataDirectory(directory.path());
     const QString password = QStringLiteral("gui-contract");
-    geocoin::test::expect(model.createWallet(model.getWalletFilePath(), password), "create the wallet used by the pages");
+    geocoin::test::expect(model.createWallet(directory.filePath(QStringLiteral("contract-wallet.bin")), password), "create the wallet used by the pages");
     const QString address = model.getAddress();
     geocoin::test::expect(!address.isEmpty(), "created wallet has an address");
 
@@ -281,6 +284,14 @@ void checkPagesFollowTheWallet(WalletModel& model, DialogLog& dialogs)
     geocoin::test::expect(dialogs.text().contains(QStringLiteral("Insufficient balance")),
                           "Send rejects an amount the wallet cannot pay");
 
+    model.beginQuiesce();
+    QElapsedTimer closeTimeout;
+    closeTimeout.start();
+    while (!model.isQuiesced() && closeTimeout.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    geocoin::test::expect(model.isQuiesced(), "wallet workers quiesce before closing the pages");
     model.closeWallet();
     geocoin::test::expect(!sendButton->isEnabled(), "closing the wallet disables Send");
     geocoin::test::expect(findLabelContaining(send, QStringLiteral("Load or create a wallet")) &&
@@ -293,6 +304,11 @@ void checkPagesFollowTheWallet(WalletModel& model, DialogLog& dialogs)
 
 int main(int argc, char** argv)
 {
+    QTemporaryDir settingsDir;
+    if (!settingsDir.isValid()) return 1;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, settingsDir.path());
     QCoreApplication::setOrganizationName(QStringLiteral("GeoCoinGuiContractTest"));
     QCoreApplication::setApplicationName(QStringLiteral("GeoCoinGuiContractTest"));
     QApplication application(argc, argv);

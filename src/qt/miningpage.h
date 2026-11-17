@@ -5,6 +5,8 @@
 #define GEOCOIN_QT_MININGPAGE_H
 
 #include <QProcess>
+#include <QElapsedTimer>
+#include <QPointer>
 #include <QWidget>
 #include <memory>
 
@@ -21,6 +23,7 @@ class QCheckBox;
 class QListWidget;
 class QTabWidget;
 class QTimer;
+class QMessageBox;
 QT_END_NAMESPACE
 
 namespace geocoin {
@@ -41,11 +44,15 @@ public:
     void setClientModel(ClientModel *clientModel);
     void setWalletModel(WalletModel *walletModel);
     bool isGpuMiningActive() const;
+    bool hasPendingMiningAction() const { return miningActionInProgress || miningStopAction.isRunning(); }
     void waitForPendingMiningStop();
     void applyTheme();
+    bool runProcessLifecycleChecks(const QString& fixture, QString* error);
 
 signals:
     void gpuMiningChanged(bool enabled, double hashrate, int acceptedBlocks, int rejectedBlocks);
+    void gpuMiningStopped();
+    void gpuCleanupError(const QString& error);
 
 public slots:
     void updateMiningInfo(bool enabled, int threads, double hashrate, quint64 minedBlocksAccepted);
@@ -94,6 +101,20 @@ private:
     int gpuRejectedBlocks;
     double gpuHashrate;
     ManagedAsyncAction miningStopAction;
+    ManagedAsyncAction gpuRpcStopAction;
+    struct RpcCleanupState;
+    std::shared_ptr<RpcCleanupState> gpuRpcCleanup;
+    QTimer *gpuStopPollTimer = nullptr;
+    bool gpuStopRequested = false;
+    bool gpuSessionFinalizing = false;
+    bool gpuCleanupFailed = false;
+    QPointer<QMessageBox> gpuCleanupErrorDialog;
+    QElapsedTimer gpuStopElapsed;
+    bool gpuTerminateSent = false;
+    bool gpuKillSent = false;
+    QString gpuLastError;
+    QByteArray gpuOutputBuffer;
+    QByteArray gpuErrorBuffer;
 
     void setupUi();
     void showStyledMessageBox(int icon, const QString &title, const QString &text);
@@ -109,6 +130,12 @@ private:
     void updateOverallMiningDisplay();
     void createGpuMinerProcess();
     void resetGpuMinerProcess(bool forceStop);
+    void finishGpuSession(int exitCode, QProcess::ExitStatus exitStatus);
+    void requestGpuRpcStop();
+    void reportGpuCleanupFailure(const QString& error);
+    void pollGpuStop();
+    void clearGpuRates();
+    void recordGpuDiagnostic(const QString& event, const QString& detail = QString());
     void applyModeTabsStyle();
     void updateGpuBackendMinimumSizes();
     void refreshWalletState();

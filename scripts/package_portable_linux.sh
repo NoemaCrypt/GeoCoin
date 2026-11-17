@@ -11,8 +11,13 @@ case "$BUNDLE_PROFILE" in
   admin|sdk) SUFFIX="-$BUNDLE_PROFILE" ;;
   *) echo "BUNDLE_PROFILE must be user, admin or sdk" >&2; exit 2 ;;
 esac
-OUT_DIR="$(realpath -m "${OUT_DIR:-$ROOT_DIR/out/portable/GeoCoin-linux-x86_64$SUFFIX}")"
-ARCHIVE_PATH="${ARCHIVE_PATH:-$ROOT_DIR/out/portable/GeoCoin-linux-x86_64$SUFFIX-portable.tar.gz}"
+case "$(uname -m)" in
+  x86_64|amd64) PORTABLE_ARCH=x86_64 ;;
+  aarch64|arm64) PORTABLE_ARCH=aarch64 ;;
+  *) echo "Unsupported native Linux portable architecture: $(uname -m)" >&2; exit 2 ;;
+esac
+OUT_DIR="$(realpath -m "${OUT_DIR:-$ROOT_DIR/out/portable/GeoCoin-linux-$PORTABLE_ARCH$SUFFIX}")"
+ARCHIVE_PATH="${ARCHIVE_PATH:-$ROOT_DIR/out/portable/GeoCoin-linux-$PORTABLE_ARCH$SUFFIX-portable.tar.gz}"
 REPORT_PATH="${REPORT_PATH:-$ROOT_DIR/out/packaging/linux-$BUNDLE_PROFILE-runtime-dependencies.txt}"
 
 log() { printf '[portable-linux] %s\n' "$*"; }

@@ -8,6 +8,7 @@
 #include "geocoin/node/node_runtime.hpp"
 #include "geocoin/utils/logger.hpp"
 #include "geocoin/utils/logging.hpp"
+#include "geocoin/utils/filesystem.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -101,9 +102,10 @@ void Node::connection_loop() {
     }
 
     // Загружаем известные адреса из отдельной address-зоны.
-    const std::filesystem::path addresses_dir = std::filesystem::path(config_.data_dir) / "addresses";
+    const std::filesystem::path addresses_dir = utils::path_from_utf8(config_.data_dir + "/addresses");
     std::filesystem::create_directories(addresses_dir);
-    std::string peers_file = (addresses_dir / "peers.dat").string();
+    const auto peers_utf8 = (addresses_dir / "peers.dat").u8string();
+    std::string peers_file(peers_utf8.begin(), peers_utf8.end());
     addrman->load(peers_file);
     if (detail::node_verbose_enabled()) {
         LogPrintf("Loaded %zu peer addresses from %s\n", addrman->size(), peers_file.c_str());

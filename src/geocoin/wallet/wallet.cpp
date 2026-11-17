@@ -49,6 +49,9 @@ void Wallet::clear() {
     keys_.clear();
     multisig_addresses_.clear();
     file_path_.clear();
+    loaded_format_ = WalletFileFormat::UNKNOWN;
+    loaded_encrypted_ = false;
+    last_load_result_ = {};
     ++wallet_revision_;
     vault_mode_ = false;
     vault_keys_dirty_ = true;

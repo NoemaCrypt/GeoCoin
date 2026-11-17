@@ -18,7 +18,8 @@ if(BUILD_QT_GUI)
         string(REPLACE "." "_" _scale_name "${_scale}")
         set(_layout_command ${CMAKE_COMMAND} -E env
             "QT_SCALE_FACTOR=${_scale}"
-            "GEOCOIN_UI_TEST_OUTPUT=${CMAKE_BINARY_DIR}/ui-layout/${_scale_name}")
+            "GEOCOIN_UI_TEST_OUTPUT=${CMAKE_BINARY_DIR}/ui-layout/${_scale_name}"
+            "GEOCOIN_TEST_GPU_MINER=$<TARGET_FILE:test_gpu_miner_runtime>")
         if(UNIX AND XVFB_RUN_EXECUTABLE)
             list(APPEND _layout_command ${XVFB_RUN_EXECUTABLE} -a -s "-screen 0 3200x2200x24"
                 $<TARGET_FILE:geocoin-qt> -platform xcb)

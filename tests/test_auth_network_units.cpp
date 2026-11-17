@@ -346,11 +346,15 @@ void test_dns_resolver_local_and_invalid_inputs()
 
     const auto mainnet_seeds = geocoin::network::get_hardcoded_seed_nodes(false);
     const auto testnet_seeds = geocoin::network::get_hardcoded_seed_nodes(true);
-    expect(mainnet_seeds == std::vector<std::string>{"45.12.114.4:3030"},
-           "mainnet uses only the operational fixed bootstrap endpoint");
+    expect(mainnet_seeds == std::vector<std::string>{
+               "45.12.114.4:3030", "188.130.154.62:3030", "217.60.37.56:3030", "31.58.79.166:3030",
+               "seed1.geocoin.network:3030", "seed2.geocoin.network:3030",
+               "seed3.geocoin.network:3030", "seed4.geocoin.network:3030"},
+           "mainnet uses the verified fixed and DNS bootstrap endpoints");
     expect(testnet_seeds.empty(), "testnet has no unverified fallback seeds");
-    expect(geocoin::network::get_dns_seed_hostnames(false).empty(),
-           "mainnet does not attempt retired DNS seeds");
+    expect(geocoin::network::get_dns_seed_hostnames(false) == std::vector<std::string>{
+               "seed1.geocoin.network", "seed2.geocoin.network", "seed3.geocoin.network", "seed4.geocoin.network"},
+           "mainnet DNS seeds match the verified listeners");
     expect(geocoin::network::get_dns_seed_hostnames(true).empty(),
            "testnet does not attempt retired DNS seeds");
 }

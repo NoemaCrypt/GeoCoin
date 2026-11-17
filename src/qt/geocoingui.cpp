@@ -21,6 +21,7 @@
 #include <QStatusBar>
 #include <QLabel>
 #include <QToolButton>
+#include <QFrame>
 #include <QProgressBar>
 #include <QVBoxLayout>
 #include <QMessageBox>
@@ -28,6 +29,8 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QThread>
 #include <QInputDialog>
 #include <QFileDialog>
 #include <QFile>
@@ -67,6 +70,13 @@ GeoCoinGUI::GeoCoinGUI(const NetworkStyle *networkStyle, QWidget *parent) :
     setMinimumSize(640, 480);
     resize(960, 640);
 
+#ifdef Q_OS_LINUX
+    clientAreaFrame_ = new QFrame(this);
+    clientAreaFrame_->setObjectName(QStringLiteral("clientAreaFrame"));
+    clientAreaFrame_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    clientAreaFrame_->setFocusPolicy(Qt::NoFocus);
+    clientAreaFrame_->setGeometry(rect());
+#endif
     applyCurrentTheme();
 
     // Create actions
@@ -94,6 +104,7 @@ GeoCoinGUI::GeoCoinGUI(const NetworkStyle *networkStyle, QWidget *parent) :
 
     restoreUiSettings();
     updateWalletActions();
+    if (clientAreaFrame_) clientAreaFrame_->raise();
 }
 
 GeoCoinGUI::~GeoCoinGUI()
@@ -324,17 +335,30 @@ bool GeoCoinGUI::runSmokeChecks(QString *error)
         WalletModel lifecycleModel;
         lifecycleModel.setDataDirectory(lifecycleDir);
         const QString expectedPath = QDir(lifecycleDir).filePath(QStringLiteral("wallet.dat"));
-        if (QFileInfo(lifecycleModel.getWalletFilePath()).absoluteFilePath() !=
-            QFileInfo(expectedPath).absoluteFilePath()) {
-            return fail(tr("Wallet model did not use the configured data directory"));
+        if (!lifecycleModel.getWalletFilePath().isEmpty() || lifecycleModel.isWalletLoaded()) {
+            return fail(tr("An unloaded wallet already has an active file"));
         }
+        auto closeSmokeWallet = [&]() {
+            lifecycleModel.beginQuiesce();
+            QElapsedTimer timer;
+            timer.start();
+            while (!lifecycleModel.isQuiesced() && timer.elapsed() < 5000) {
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                QThread::msleep(1);
+            }
+            if (!lifecycleModel.isQuiesced()) return false;
+            lifecycleModel.closeWallet();
+            return !lifecycleModel.isWalletLoaded();
+        };
 
         int stateChanges = 0;
         connect(&lifecycleModel, &WalletModel::walletStateChanged,
                 this, [&stateChanges]() { ++stateChanges; });
         const QString smokePassword = QStringLiteral("smoke-password");
         if (!lifecycleModel.createWallet(expectedPath, smokePassword) ||
-            !lifecycleModel.isWalletLoaded() || !lifecycleModel.isWalletEncrypted()) {
+            !lifecycleModel.isWalletLoaded() || !lifecycleModel.isWalletEncrypted() ||
+            QFileInfo(lifecycleModel.getWalletFilePath()).absoluteFilePath() !=
+                QFileInfo(expectedPath).absoluteFilePath()) {
             return fail(tr("Encrypted wallet creation smoke check failed"));
         }
         QString saveError;
@@ -343,8 +367,7 @@ bool GeoCoinGUI::runSmokeChecks(QString *error)
             lifecycleModel.saveWallet(smokePassword, &saveError) == false) {
             return fail(tr("Encrypted wallet save result smoke check failed"));
         }
-        lifecycleModel.closeWallet();
-        if (lifecycleModel.isWalletLoaded() ||
+        if (!closeSmokeWallet() ||
             !lifecycleModel.loadWallet(expectedPath, smokePassword) ||
             stateChanges < 3) {
             return fail(tr("Wallet close/load lifecycle smoke check failed"));
@@ -355,12 +378,11 @@ bool GeoCoinGUI::runSmokeChecks(QString *error)
             QFileInfo::exists(expectedPath + QStringLiteral(".bak"))) {
             return fail(tr("Wallet passphrase replacement smoke check failed"));
         }
-        lifecycleModel.closeWallet();
-        if (lifecycleModel.loadWallet(expectedPath, smokePassword) ||
+        if (!closeSmokeWallet() || lifecycleModel.loadWallet(expectedPath, smokePassword) ||
             !lifecycleModel.loadWallet(expectedPath, replacementPassword)) {
             return fail(tr("Old wallet passphrase remained usable after replacement"));
         }
-        lifecycleModel.closeWallet();
+        if (!closeSmokeWallet()) return fail(tr("Wallet synchronization did not stop"));
     }
     QDir(lifecycleDir).removeRecursively();
 
@@ -464,6 +486,16 @@ void GeoCoinGUI::applyCurrentTheme()
     GUIUtil::applyApplicationTheme(qApp, theme);
     setStyleSheet(GUIUtil::windowStyleSheet(theme));
     GUIUtil::applyNativeWindowTheme(this, theme);
+    if (clientAreaFrame_) {
+        clientAreaFrame_->setStyleSheet(QStringLiteral(
+            "QFrame#clientAreaFrame { background: transparent; border: 1px solid %1; }")
+            .arg(GUIUtil::isDarkTheme(theme) ? QStringLiteral("#D6A84F") : QStringLiteral("#977E53")));
+        clientAreaFrame_->raise();
+    }
+    if (themeToggleButton) {
+        themeToggleButton->setIcon(GUIUtil::themeToggleIcon(GUIUtil::isDarkTheme(theme)));
+        themeToggleButton->setToolTip(GUIUtil::isDarkTheme(theme) ? tr("Light") : tr("Dark"));
+    }
     if (walletFrame) {
         walletFrame->applyTheme();
     }
@@ -624,17 +656,31 @@ void GeoCoinGUI::createStatusBar()
     progressBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     statusBar()->addWidget(progressBar, 1);
 
-    labelHashrateStatus = new QLabel(tr("Mining: idle (0 H/s)"));
+    labelHashrateStatus = new QLabel();
+    labelHashrateStatus->setObjectName(QStringLiteral("miningRatesStatus"));
     labelHashrateStatus->installEventFilter(this);
     statusMiningText_ = labelHashrateStatus->text();
     labelHashrateStatus->setStyleSheet("QLabel { color: " + GUIUtil::Theme::ColorGray + "; font-weight: bold; }");
     statusBar()->addPermanentWidget(labelHashrateStatus, 1);
-    labelHashrateStatus->setMinimumWidth(0);
-    labelHashrateStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    labelHashrateStatus->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
     labelHashrateStatus->setWordWrap(false);
     labelConnectionsText->setWordWrap(false);
     labelBlocksText->setWordWrap(false);
     progressBarLabel->setWordWrap(false);
+    themeToggleButton = new QToolButton(this);
+    themeToggleButton->setObjectName(QStringLiteral("themeToggleButton"));
+    themeToggleButton->setFixedSize(30, 30);
+    themeToggleButton->setIconSize(QSize(20, 20));
+    themeToggleButton->setStyleSheet(QStringLiteral("QToolButton { padding: 3px; border-radius: 4px; }"));
+    themeToggleButton->setIcon(GUIUtil::themeToggleIcon(GUIUtil::isDarkTheme()));
+    themeToggleButton->setToolTip(GUIUtil::isDarkTheme() ? tr("Light") : tr("Dark"));
+    connect(themeToggleButton, &QToolButton::clicked, this, [this] {
+        OptionsModel options;
+        options.setTheme(GUIUtil::isDarkTheme() ? QStringLiteral("light") : QStringLiteral("dark"));
+        applyCurrentTheme();
+    });
+    statusBar()->addPermanentWidget(themeToggleButton);
+    refreshMiningStatusBar();
 }
 
 void GeoCoinGUI::setClientModel(ClientModel *model)
@@ -652,6 +698,8 @@ void GeoCoinGUI::setClientModel(ClientModel *model)
         connect(model, &ClientModel::numConnectionsChanged, this, &GeoCoinGUI::setNumConnections, Qt::UniqueConnection);
         connect(model, &ClientModel::numBlocksChanged, this, &GeoCoinGUI::setNumBlocks, Qt::UniqueConnection);
         connect(model, &ClientModel::miningChanged, this, &GeoCoinGUI::updateMiningStatus, Qt::UniqueConnection);
+        connect(model, &ClientModel::miningDiagnosticsChanged, this,
+                [this](const QString&) { refreshMiningStatusBar(); });
 
         // Pass to wallet frame
         if (walletFrame) {
@@ -682,6 +730,7 @@ void GeoCoinGUI::setWalletModel(WalletModel *model)
         connect(walletModel, &WalletModel::walletStateChanged,
                 this, &GeoCoinGUI::updateWalletActions);
         auto showHistoryError = [this](const QString& error) {
+            if (closing_ || walletTransition_) return;
             if (error == lastWalletHistoryError_) return;
             lastWalletHistoryError_ = error;
             if (error.isEmpty()) return;
@@ -810,32 +859,26 @@ void GeoCoinGUI::refreshMiningStatusBar()
     const double totalHashrate = (cpuActive ? statusCpuHashrate : 0.0) +
                                  (gpuActive ? statusGpuHashrate : 0.0);
 
-    QString text;
-    if (cpuActive && gpuActive) {
-        text = tr("Mining: %1 • CPU %2 thread(s) + GPU")
-            .arg(GUIUtil::formatHashrate(totalHashrate))
-            .arg(statusCpuMiningThreads);
-        labelHashrateStatus->setStyleSheet("QLabel { color: " + GUIUtil::Theme::ColorGreen + "; font-weight: bold; }");
-    } else if (cpuActive) {
-        text = tr("Mining: %1 • CPU %2 thread(s)")
-            .arg(GUIUtil::formatHashrate(statusCpuHashrate))
-            .arg(statusCpuMiningThreads);
-        labelHashrateStatus->setStyleSheet("QLabel { color: " + GUIUtil::Theme::ColorGreen + "; font-weight: bold; }");
-    } else if (gpuActive) {
-        text = tr("Mining: %1 • GPU").arg(GUIUtil::formatHashrate(statusGpuHashrate));
-        labelHashrateStatus->setStyleSheet("QLabel { color: " + GUIUtil::Theme::ColorGreen + "; font-weight: bold; }");
-    } else {
-        text = tr("Mining: idle (0 H/s)");
-        labelHashrateStatus->setStyleSheet("QLabel { color: " + GUIUtil::Theme::ColorGray + "; font-weight: bold; }");
-    }
+    const QString text = tr("Total: %1 | CPU: %2 | GPU: %3")
+        .arg(GUIUtil::formatHashrate(totalHashrate),
+             GUIUtil::formatHashrate(cpuActive ? statusCpuHashrate : 0.0),
+             GUIUtil::formatHashrate(gpuActive ? statusGpuHashrate : 0.0));
+    labelHashrateStatus->setStyleSheet("QLabel { color: " +
+        (cpuActive || gpuActive ? GUIUtil::Theme::ColorGreen : GUIUtil::Theme::ColorGray) +
+        "; font-weight: bold; }");
     statusMiningText_ = text;
-    labelHashrateStatus->setToolTip(text);
+    labelHashrateStatus->setToolTip(text + tr("\nCPU: %1 thread(s)").arg(statusCpuMiningThreads) +
+        (clientModel ? QStringLiteral("\n") + clientModel->getMiningDiagnostics() : QString()));
     updateStatusBarLayout();
 }
 
 void GeoCoinGUI::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
+    if (clientAreaFrame_) {
+        clientAreaFrame_->setGeometry(rect());
+        clientAreaFrame_->raise();
+    }
     if (labelHashrateStatus && progressBar) {
         updateStatusBarLayout();
         QTimer::singleShot(0, this, &GeoCoinGUI::updateStatusBarLayout);
@@ -858,8 +901,14 @@ void GeoCoinGUI::updateStatusBarLayout()
 
 void GeoCoinGUI::updateMiningStatusText()
 {
-    labelHashrateStatus->setText(labelHashrateStatus->fontMetrics().elidedText(
-        statusMiningText_, Qt::ElideRight, qMax(0, labelHashrateStatus->contentsRect().width())));
+    if (width() < 900) {
+        const double cpu = statusCpuMiningEnabled ? statusCpuHashrate : 0.0;
+        const double gpu = statusGpuMiningEnabled ? statusGpuHashrate : 0.0;
+        labelHashrateStatus->setText(QStringLiteral("T %1  CPU %2  GPU %3")
+            .arg(GUIUtil::formatHashrate(cpu + gpu), GUIUtil::formatHashrate(cpu), GUIUtil::formatHashrate(gpu)));
+    } else {
+        labelHashrateStatus->setText(statusMiningText_);
+    }
 }
 
 bool GeoCoinGUI::eventFilter(QObject *watched, QEvent *event)
@@ -1069,6 +1118,7 @@ void GeoCoinGUI::gotoNftPage()
 
 void GeoCoinGUI::closeEvent(QCloseEvent *event)
 {
+    if (closing_) { event->accept(); return; }
     QSettings settings;
     settings.setValue(QStringLiteral("ui/main_window_geometry"), saveGeometry());
     settings.setValue(QStringLiteral("ui/main_window_state"), saveState());
@@ -1092,9 +1142,7 @@ void GeoCoinGUI::closeEvent(QCloseEvent *event)
         return;
     }
 
-    if (walletFrame) {
-        walletFrame->stopGpuMining();
-    }
+    beginShutdown();
 
     // Accept event and hide window immediately
     event->accept();
@@ -1111,11 +1159,13 @@ void GeoCoinGUI::closeEvent(QCloseEvent *event)
 
 void GeoCoinGUI::showStyledMessageBox(int icon, const QString &title, const QString &text)
 {
+    if (closing_) return;
     GUIUtil::showStyledMessageBox(this, static_cast<QMessageBox::Icon>(icon), title, text);
 }
 
 int GeoCoinGUI::showStyledQuestionBox(const QString &title, const QString &text)
 {
+    if (closing_) return QMessageBox::No;
     return GUIUtil::showStyledMessageBox(
         this,
         QMessageBox::Question,
@@ -1128,6 +1178,7 @@ int GeoCoinGUI::showStyledQuestionBox(const QString &title, const QString &text)
 
 QString GeoCoinGUI::showStyledInputDialog(const QString &title, const QString &label, int echoMode)
 {
+    if (closing_) return QString();
     QInputDialog inputDialog(this);
     inputDialog.setWindowTitle(title);
     inputDialog.setLabelText(label);
@@ -1142,16 +1193,16 @@ QString GeoCoinGUI::showStyledInputDialog(const QString &title, const QString &l
 
 void GeoCoinGUI::updateWalletActions()
 {
-    const bool loaded = walletModel && walletModel->isWalletLoaded();
+    const bool loaded = !closing_ && !walletTransition_ && walletModel && walletModel->isWalletLoaded();
     const bool encrypted = loaded && walletModel->isWalletEncrypted();
-    if (createWalletAction) createWalletAction->setEnabled(walletModel && !loaded);
-    if (loadWalletAction) loadWalletAction->setEnabled(walletModel && !loaded);
+    if (createWalletAction) createWalletAction->setEnabled(walletModel && !closing_ && !walletTransition_);
+    if (loadWalletAction) loadWalletAction->setEnabled(walletModel && !closing_ && !walletTransition_);
     if (closeWalletAction) closeWalletAction->setEnabled(loaded);
     if (encryptWalletAction) encryptWalletAction->setEnabled(loaded && !encrypted);
     if (changePassphraseAction) changePassphraseAction->setEnabled(encrypted);
     if (backupWalletAction) backupWalletAction->setEnabled(loaded);
     if (exportPrivateKeyAction) exportPrivateKeyAction->setEnabled(loaded);
-    if (importPrivateKeyAction) importPrivateKeyAction->setEnabled(walletModel != nullptr);
+    if (importPrivateKeyAction) importPrivateKeyAction->setEnabled(!closing_ && !walletTransition_ && loaded);
     if (sendCoinsAction) sendCoinsAction->setEnabled(loaded);
     if (receiveCoinsAction) receiveCoinsAction->setEnabled(loaded);
     if (nftAction) nftAction->setEnabled(loaded);
@@ -1159,6 +1210,7 @@ void GeoCoinGUI::updateWalletActions()
 
 bool GeoCoinGUI::ensureWalletSaved()
 {
+    if (closing_) return false;
     if (!walletModel || !walletModel->isWalletLoaded() || !walletModel->hasUnsavedChanges()) {
         return true;
     }
@@ -1186,20 +1238,10 @@ bool GeoCoinGUI::ensureWalletSaved()
 
 void GeoCoinGUI::closeWallet()
 {
-    if (!walletModel || !walletModel->isWalletLoaded()) {
+    if (closing_ || walletTransition_ || !walletModel || !walletModel->isWalletLoaded()) {
         return;
     }
-    const bool cpuMiningActive = clientModel && clientModel->getMiningEnabled();
-    const bool gpuMiningActive = walletFrame && walletFrame->isGpuMiningActive();
-    if (cpuMiningActive || gpuMiningActive) {
-        showStyledMessageBox(2, tr("Close Wallet"),
-            tr("Stop CPU and GPU mining before closing the wallet."));
-        return;
-    }
-    if (!ensureWalletSaved()) {
-        return;
-    }
-    walletModel->closeWallet();
+    startWalletTransition(true);
 }
 
 void GeoCoinGUI::encryptWallet()
@@ -1382,17 +1424,13 @@ void GeoCoinGUI::changePassphrase()
 
 void GeoCoinGUI::createWallet()
 {
-    if (!walletModel) {
+    if (closing_ || walletTransition_ || !walletModel) {
         return;
     }
 
-    if (walletModel->isWalletLoaded()) {
-        showStyledMessageBox(1, tr("Create Wallet"),
-            tr("A wallet is already loaded. Close it first."));
-        return;
-    }
-
-    const QString filename = walletModel->getWalletFilePath();
+    const QString filename = QFileDialog::getSaveFileName(this, tr("Create Wallet"),
+        dataDirectory, tr("Wallet files (*)"));
+    if (filename.isEmpty() || closing_) return;
 
     // Check if wallet already exists
     if (QFile::exists(filename)) {
@@ -1432,14 +1470,12 @@ void GeoCoinGUI::createWallet()
     }
 
     // Create wallet
-    if (walletModel->createWallet(filename, password)) {
-        showStyledMessageBox(1, tr("Create Wallet"),
-            tr("Wallet created successfully!\n\nAddress: %1\n\nWallet saved to: %2")
-                .arg(walletModel->getAddress())
-                .arg(filename));
+    if (closing_) return;
+    if (walletModel->stageWallet(filename, password, true)) {
+        startWalletTransition(false);
     } else {
         showStyledMessageBox(3, tr("Create Wallet"),
-            tr("Failed to create wallet."));
+            walletModel->walletOperationError());
     }
     cleanseQString(password);
     cleanseQString(password2);
@@ -1447,48 +1483,157 @@ void GeoCoinGUI::createWallet()
 
 void GeoCoinGUI::loadWallet()
 {
-    if (!walletModel) {
+    if (closing_ || walletTransition_ || !walletModel) return;
+    const QString filename = QFileDialog::getOpenFileName(this, tr("Open Wallet"),
+        walletModel->getWalletFilePath().isEmpty() ? dataDirectory : walletModel->getWalletFilePath(),
+        tr("Wallet files (*);;GeoCoin wallets (*.dat *.wallet)"));
+    if (!closing_ && !filename.isEmpty()) openWalletPath(filename);
+}
+
+void GeoCoinGUI::openWalletPath(const QString& filename, const QString& suppliedPassword)
+{
+    if (closing_ || walletTransition_ || !walletModel) return;
+    QString password = suppliedPassword;
+    ScopedQStringCleanser cleanser(password);
+    bool staged = walletModel->stageWallet(filename, password);
+    if (!staged && password.isEmpty() &&
+        (walletModel->walletOperationCode() == QStringLiteral("password_required") ||
+         walletModel->walletOperationCode() == QStringLiteral("authentication_failed"))) {
+        if (!GUIUtil::getStyledText(this, tr("Open Wallet"),
+            tr("Passphrase for %1:").arg(filename), password, QLineEdit::Password) || closing_) return;
+        staged = walletModel->stageWallet(filename, password);
+    }
+    if (!staged) {
+        showWalletOperationError(tr("Open Wallet"));
         return;
     }
+    if (walletModel->stagedWalletNeedsMigration()) {
+        const int answer = showStyledQuestionBox(tr("Migrate Legacy Wallet"),
+            tr("Migrate %1 in place? GeoCoin will verify a byte-for-byte legacy backup before atomically replacing the source. The existing backup is never overwritten.").arg(filename));
+        if (answer != QMessageBox::Yes || closing_) { walletModel->discardStagedWallet(); return; }
+        QString output = filename;
+        if (!QFileInfo(filename).isWritable() || !QFileInfo(QFileInfo(filename).absolutePath()).isWritable()) {
+            output = QFileDialog::getSaveFileName(this, tr("Migration Copy (Source Is Read-Only)"),
+                filename + QStringLiteral(".v13"), tr("Wallet files (*)"));
+        }
+        if (output.isEmpty() || closing_) { walletModel->discardStagedWallet(); return; }
+        if (!walletModel->migrateStagedWallet(password, output)) {
+            showWalletOperationError(tr("Migrate Legacy Wallet"));
+            if (!closing_ && walletModel->walletOperationCode() != QStringLiteral("migration_committed_not_durable") &&
+                showStyledQuestionBox(tr("Migration Output"), tr("The source could not be migrated in place. Choose a new output file and preserve the source?")) == QMessageBox::Yes) {
+                output = QFileDialog::getSaveFileName(this, tr("Migration Copy"),
+                    filename + QStringLiteral(".v13"), tr("Wallet files (*)"));
+                if (!closing_ && !output.isEmpty() && walletModel->migrateStagedWallet(password, output)) {
+                    startWalletTransition(false);
+                    return;
+                }
+                if (!closing_ && !output.isEmpty()) showWalletOperationError(tr("Migrate Legacy Wallet"));
+            }
+            walletModel->discardStagedWallet();
+            return;
+        }
+    }
+    if (!closing_) startWalletTransition(false);
+}
 
-    if (walletModel->isWalletLoaded()) {
-        showStyledMessageBox(1, tr("Load Wallet"),
-            tr("A wallet is already loaded. Close it first."));
+void GeoCoinGUI::showWalletOperationError(const QString& title)
+{
+    if (closing_ || !walletModel) return;
+    auto* message = new QMessageBox(QMessageBox::Warning, title,
+        walletModel->walletOperationError(), QMessageBox::Ok, this);
+    message->setTextFormat(Qt::PlainText);
+    message->setAttribute(Qt::WA_DeleteOnClose);
+    message->setWindowModality(Qt::NonModal);
+    message->show();
+}
+
+void GeoCoinGUI::startWalletTransition(bool closeOnly)
+{
+    if (closing_ || walletTransition_ || !walletModel) return;
+    walletTransition_ = true;
+    updateWalletActions();
+    if (walletFrame) {
+        walletFrame->setEnabled(false);
+        walletFrame->stopGpuMining();
+    }
+    const auto mining = clientModel ? clientModel->getMiningControl() : nullptr;
+    if (mining) walletMiningStop_.start([mining]() { mining->stop_mining(); });
+    walletModel->beginQuiesce();
+    auto* timer = new QTimer(this);
+    timer->setInterval(25);
+    connect(timer, &QTimer::timeout, this, [this, timer, closeOnly]() {
+        if (closing_ || !walletTransition_) { timer->stop(); timer->deleteLater(); return; }
+        finishWalletTransition(closeOnly);
+    });
+    if (walletFrame) connect(walletFrame, &WalletFrame::gpuMiningStopped, timer, [this, closeOnly]() {
+        finishWalletTransition(closeOnly);
+    });
+    timer->start();
+}
+
+void GeoCoinGUI::finishWalletTransition(bool closeOnly)
+{
+    if (closing_ || walletTransitionFinalizing_ || !walletTransition_ || !walletModel || !minersStopped()) return;
+    if (!walletModel->isQuiesced()) {
+        if (walletModel->walletOperationCode() == QStringLiteral("wallet_sync_stop_failed") &&
+            !property("walletQuiesceErrorShown").toBool()) {
+            setProperty("walletQuiesceErrorShown", true);
+            auto* error = new QMessageBox(QMessageBox::Critical, tr("Wallet Cleanup Failed"),
+                walletModel->walletOperationError(), QMessageBox::Retry, this);
+            error->setTextFormat(Qt::PlainText);
+            error->setWindowModality(Qt::NonModal);
+            error->setAttribute(Qt::WA_DeleteOnClose);
+            connect(error, &QMessageBox::finished, this, [this](int) {
+                setProperty("walletQuiesceErrorShown", false);
+                if (!closing_ && walletModel) walletModel->beginQuiesce();
+            });
+            error->show();
+        }
         return;
     }
-
-    const QString filename = walletModel->getWalletFilePath();
-
-    // Check if wallet exists
-    if (!QFile::exists(filename)) {
-        showStyledMessageBox(2, tr("Load Wallet"),
-            tr("No wallet file found at:\n%1\n\nCreate a new wallet first.").arg(filename));
-        return;
+    walletTransitionFinalizing_ = true;
+    if (walletMiningStop_.failed() || (clientModel && clientModel->getMiningEnabled())) {
+        walletModel->discardStagedWallet();
+        walletModel->resumeWalletActivity();
+        showStyledMessageBox(3, tr("Wallet Switch Failed"),
+            tr("CPU mining could not be stopped [cpu_stop_failed]. The active wallet was retained. Stop mining and retry."));
+    } else if (!ensureWalletSaved() || closing_) {
+        walletModel->discardStagedWallet();
+        if (!closing_) walletModel->resumeWalletActivity();
+    } else if (closeOnly) {
+        walletModel->closeWallet();
+    } else if (!walletModel->activateStagedWallet()) {
+        showWalletOperationError(tr("Open Wallet"));
+        walletModel->discardStagedWallet();
+        walletModel->resumeWalletActivity();
     }
+    walletTransition_ = false;
+    walletTransitionFinalizing_ = false;
+    if (!closing_ && walletFrame) walletFrame->setEnabled(true);
+    updateWalletActions();
+}
 
-    // An empty password is valid for legacy/unprotected wallets. Use a dialog
-    // whose Accepted result is distinct from Cancel.
-    QString password;
-    if (!GUIUtil::getStyledText(this,
-                                tr("Load Wallet"),
-                                tr("Enter wallet password (leave empty if unencrypted):"),
-                                password,
-                                QLineEdit::Password)) {
-        return;
+void GeoCoinGUI::beginShutdown()
+{
+    if (closing_) return;
+    closing_ = true;
+    walletTransition_ = false;
+    if (walletModel) walletModel->discardStagedWallet();
+    setEnabled(false);
+    if (walletFrame) {
+        walletFrame->cancelPendingLanguageRebuild();
+        walletFrame->stopGpuMining();
     }
-    ScopedQStringCleanser passwordCleanser(password);
+    // Closing a nested dialog event loop must not reactivate the wallet.
+    for (auto* dialog : findChildren<QDialog*>()) dialog->reject();
+    hide();
+}
 
-    // Load wallet
-    if (walletModel->loadWallet(filename, password)) {
-        showStyledMessageBox(1, tr("Load Wallet"),
-            tr("Wallet loaded successfully!\n\nAddress: %1\nBalance: %2")
-                .arg(walletModel->getAddress())
-                .arg(GUIUtil::formatAmountWithUnit(walletModel->getBalance())));
-    } else {
-        showStyledMessageBox(3, tr("Load Wallet"),
-            tr("Failed to load wallet. Incorrect password?"));
-    }
-    cleanseQString(password);
+bool GeoCoinGUI::minersStopped()
+{
+    return !walletTransitionFinalizing_ && (!walletFrame ||
+        (!walletFrame->isGpuMiningActive() && !walletFrame->hasPendingMiningAction())) &&
+        walletMiningStop_.reapIfFinished();
 }
 
 void GeoCoinGUI::exportPrivateKey()

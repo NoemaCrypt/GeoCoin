@@ -2,12 +2,15 @@
 
 #include "geocoin/wallet/wallet.hpp"
 #include "geocoin/wallet/wallet_internal.hpp"
+#include "geocoin/utils/filesystem.hpp"
 
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <string>
+#include <stdexcept>
 #include <system_error>
 #include <unordered_map>
 #include <vector>
@@ -21,6 +24,19 @@
 
 namespace geocoin::wallet {
 
+inline std::filesystem::path wallet_path(const std::string& path) {
+    if (path.find('\0') != std::string::npos) throw std::invalid_argument("Wallet path contains a NUL byte");
+    return utils::path_from_utf8(path);
+}
+
+inline std::string wallet_path_string(const std::filesystem::path& path) {
+    return utils::path_to_utf8(path);
+}
+
+inline std::string absolute_wallet_path(const std::string& path) {
+    return wallet_path_string(std::filesystem::absolute(wallet_path(path)).lexically_normal());
+}
+
 inline bool SyncDebugEnabled() {
     static const bool enabled = (std::getenv("GEOCOIN_SYNC_DEBUG") != nullptr);
     return enabled;
@@ -31,6 +47,7 @@ constexpr size_t kWalletSaltSize = 16;
 constexpr size_t kPasswordVerifierSaltSize = 16;
 constexpr uint32_t kPasswordVerifierIterations = 600000;
 constexpr uint8_t kPasswordModeNone = 0;
+constexpr uint8_t kPasswordModeLegacySha256 = 1;
 constexpr uint8_t kPasswordModePbkdf2 = 2;
 constexpr uint64_t kMaxWalletPayloadSize = 256ULL * 1024ULL * 1024ULL;
 constexpr size_t kWalletHeaderSize = sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint32_t);
@@ -85,12 +102,17 @@ class ScopedReadFd {
 public:
     explicit ScopedReadFd(int fd = -1) noexcept : fd_(fd) {}
     ~ScopedReadFd() {
+        close();
+    }
+
+    void close() noexcept {
         if (fd_ >= 0) {
 #if defined(_WIN32)
             (void)::_close(fd_);
 #else
             (void)::close(fd_);
 #endif
+            fd_ = -1;
         }
     }
 
@@ -143,6 +165,8 @@ bool rename_file_durably(
     std::error_code& ec
 );
 bool sync_parent_directory(const std::string& filename);
+// Publish without overwriting even when another process creates the destination.
+bool publish_wallet_file_exclusive(const std::string& source, const std::string& destination);
 bool read_wallet_encryption_flag(const std::string& path, bool& encrypted);
 bool derive_hmac_key_from_encrypted(
     const std::string& password,

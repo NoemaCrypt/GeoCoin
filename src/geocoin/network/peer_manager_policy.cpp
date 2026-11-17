@@ -150,16 +150,13 @@ void PeerManager::add_temp_ban_unlocked(const std::string& ip) {
     temp_banned_ips_[key] = now + detail::kPolicyTempBanDuration;
 }
 
-bool PeerManager::should_try_outbound_unlocked(const std::string& address, bool manual_target) const {
+bool PeerManager::should_try_outbound_unlocked(const std::string& address, bool) const {
     const auto it = outbound_attempts_.find(address);
     if (it == outbound_attempts_.end()) {
         return true;
     }
     if (it->second.in_progress) {
         return false;
-    }
-    if (manual_target && it->second.fail_count <= 1) {
-        return true;
     }
     return std::chrono::steady_clock::now() >= it->second.next_attempt;
 }
@@ -254,7 +251,10 @@ void PeerManager::record_disconnect_unlocked(PeerContext& ctx, const std::string
             ctx.last_disconnect_reason == "remove-peer" ||
             ctx.last_disconnect_reason == "manual-ban" ||
             ctx.last_disconnect_reason == "shutdown";
-        if (!explicit_local_disconnect) {
+        if (explicit_local_disconnect) {
+            const auto attempt = outbound_attempts_.find(ctx.peer->get_address());
+            if (attempt != outbound_attempts_.end()) attempt->second.in_progress = false;
+        } else {
             record_outbound_result_unlocked(
                 ctx.peer->get_address(),
                 false,

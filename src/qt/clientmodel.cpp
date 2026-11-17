@@ -32,61 +32,32 @@ OptionsModel *ClientModel::getOptionsModel()
 
 int ClientModel::getNumConnections() const
 {
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) return 0;
-
-    auto status = nodeInfo->get_status();
-    return status.authenticated_peers;
+    return static_cast<int>(status_.authenticated_peers);
 }
 
 int ClientModel::getNumBlocks() const
 {
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) return 0;
-
-    auto status = nodeInfo->get_status();
-    return status.current_height;
+    return static_cast<int>(status_.current_height);
 }
 
 double ClientModel::getVerificationProgress() const
 {
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) return 0.0;
-
-    auto status = nodeInfo->get_status();
-    if (status.target_height == 0) return 1.0;
-
-    return (double)status.current_height / (double)status.target_height;
+    return status_.target_height == 0 ? 1.0 :
+        static_cast<double>(status_.current_height) / status_.target_height;
 }
 
 bool ClientModel::inInitialBlockDownload() const
 {
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) return false;
-
-    auto status = nodeInfo->get_status();
-    return status.syncing;
+    return status_.syncing;
 }
 
 QString ClientModel::getStatusBarWarnings() const
 {
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) return tr("Node not initialized");
-
-    auto status = nodeInfo->get_status();
-
-    if (!status.running) {
-        return tr("Node not running");
-    }
-
-    if (status.syncing) {
-        return tr("Synchronizing with network...");
-    }
-
-    if (status.connected_peers == 0) {
-        return tr("No connections");
-    }
-
+    if (!lastMiningError_.isEmpty()) return miningDiagnostics_;
+    if (!nodeComponents_.services.info) return tr("Node not initialized");
+    if (!status_.running) return tr("Node not running");
+    if (status_.syncing) return tr("Synchronizing with network...");
+    if (status_.connected_peers == 0) return tr("No connections");
     return QString();
 }
 
@@ -98,29 +69,17 @@ bool ClientModel::getMiningEnabled() const
 
 int ClientModel::getMiningThreads() const
 {
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) return 0;
-
-    auto status = nodeInfo->get_status();
-    return status.mining_threads;
+    return static_cast<int>(status_.mining_threads);
 }
 
 double ClientModel::getHashrate() const
 {
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) return 0.0;
-
-    auto status = nodeInfo->get_status();
-    return status.hashrate;
+    return status_.hashrate;
 }
 
 quint64 ClientModel::getMinedBlocksAccepted() const
 {
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) return 0;
-
-    auto status = nodeInfo->get_status();
-    return status.mined_blocks_accepted;
+    return status_.mined_blocks_accepted;
 }
 
 std::shared_ptr<geocoin::node::MiningControlService> ClientModel::getMiningControl() const
@@ -136,30 +95,32 @@ geocoin::node::NodeComponentHandle ClientModel::getNodeComponents() const
 void ClientModel::setNodeComponents(geocoin::node::NodeComponentHandle components)
 {
     nodeComponents_ = std::move(components);
-    const auto& nodeInfo = nodeComponents_.services.info;
-    if (!nodeInfo) {
-        return;
-    }
+    updateStatus({});
+}
 
-    const auto status = nodeInfo->get_status();
-    cachedNumBlocks = status.current_height;
-    cachedNumConnections = status.authenticated_peers;
-    cachedMiningEnabled = status.mining;
-    cachedMiningThreads = status.mining_threads;
-    cachedHashrate = status.hashrate;
-    cachedMinedBlocksAccepted = status.mined_blocks_accepted;
-    emit numBlocksChanged(cachedNumBlocks);
-    emit numConnectionsChanged(cachedNumConnections);
-    emit miningChanged(
-        cachedMiningEnabled,
-        cachedMiningThreads,
-        cachedHashrate,
-        cachedMinedBlocksAccepted
-    );
+void ClientModel::updateStatus(const geocoin::node::NodeStatus& status)
+{
+    status_ = status;
+    updateNumBlocks(static_cast<int>(status.current_height));
+    updateNumConnections(static_cast<int>(status.authenticated_peers));
+    updateMining(status.mining, static_cast<int>(status.mining_threads), status.hashrate, status.mined_blocks_accepted);
+    const QString error = QString::fromStdString(status.mining_error);
+    const QString diagnostics = tr("CPU mining: requested %1, spawned %2, active %3%4")
+        .arg(static_cast<qulonglong>(status.mining_threads_requested))
+        .arg(static_cast<qulonglong>(status.mining_threads_spawned))
+        .arg(static_cast<qulonglong>(status.mining_threads_active))
+        .arg(error.isEmpty() ? QString() : QStringLiteral("\n") + error);
+    if (diagnostics != miningDiagnostics_) {
+        miningDiagnostics_ = diagnostics;
+        emit miningDiagnosticsChanged(diagnostics);
+    }
+    if (!error.isEmpty() && error != lastMiningError_) emit message(tr("CPU Mining"), diagnostics, 2);
+    lastMiningError_ = error;
 }
 
 void ClientModel::updateNumConnections(int numConnections)
 {
+    status_.authenticated_peers = static_cast<size_t>(std::max(0, numConnections));
     if (numConnections == cachedNumConnections) {
         return;
     }
@@ -169,6 +130,7 @@ void ClientModel::updateNumConnections(int numConnections)
 
 void ClientModel::updateNumBlocks(int numBlocks)
 {
+    status_.current_height = static_cast<geocoin::Height>(std::max(0, numBlocks));
     if (numBlocks == cachedNumBlocks) {
         return;
     }
@@ -178,6 +140,10 @@ void ClientModel::updateNumBlocks(int numBlocks)
 
 void ClientModel::updateMining(bool enabled, int threads, double hashrate, quint64 minedBlocksAccepted)
 {
+    status_.mining = enabled;
+    status_.mining_threads = static_cast<size_t>(std::max(0, threads));
+    status_.hashrate = hashrate;
+    status_.mined_blocks_accepted = minedBlocksAccepted;
     if (enabled == cachedMiningEnabled &&
         threads == cachedMiningThreads &&
         minedBlocksAccepted == cachedMinedBlocksAccepted &&

@@ -5,6 +5,8 @@
 #include "overviewpage.h"
 #include "nftpage.h"
 #include "optionsmodel.h"
+#include "intro.h"
+#include "miningpage.h"
 
 #include <QAbstractButton>
 #include <QAbstractScrollArea>
@@ -13,9 +15,13 @@
 #include <QButtonGroup>
 #include <QDir>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QDebug>
 #include <QDialog>
 #include <QFile>
+#include <QFileDialog>
+#include <QFrame>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -29,6 +35,7 @@
 #include <QToolButton>
 #include <QTimer>
 #include <QTabWidget>
+#include <QThread>
 
 bool GeoCoinGUI::runLayoutChecks(QString *error)
 {
@@ -59,6 +66,70 @@ bool GeoCoinGUI::runLayoutChecks(QString *error)
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
         }
     };
+    {
+        Intro intro;
+        const QString selected = QDir(output).filePath(QStringLiteral("chosen folder"));
+        intro.setDataDirectory(selected);
+        if (intro.getDataDirectory() != selected)
+            record(QStringLiteral("intro"), QStringLiteral("Chosen directory was changed"));
+#ifdef Q_OS_LINUX
+        QDir().mkpath(selected);
+        intro.show();
+        bool selectionQueued = false;
+        bool timedOut = false;
+        int heartbeats = 0;
+        auto ownedDialog = [&intro](QObject* dialog) {
+            for (QObject* parent = dialog->parent(); parent; parent = parent->parent())
+                if (parent == &intro) return true;
+            return false;
+        };
+        QTimer picker;
+        picker.setInterval(10);
+        connect(&picker, &QTimer::timeout, &intro, [&] {
+            ++heartbeats;
+            if (selectionQueued) return;
+            for (QWidget* widget : QApplication::topLevelWidgets()) {
+                auto* dialog = qobject_cast<QFileDialog*>(widget);
+                if (!dialog || !dialog->isVisible() || !ownedDialog(dialog)) continue;
+                selectionQueued = true;
+                dialog->setDirectory(selected);
+                dialog->selectFile(selected);
+                QTimer::singleShot(200, dialog, [dialog] {
+                    QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+                });
+                break;
+            }
+        });
+        QTimer watchdog;
+        watchdog.setSingleShot(true);
+        connect(&watchdog, &QTimer::timeout, &intro, [&] {
+            timedOut = true;
+            for (QWidget* widget : QApplication::topLevelWidgets()) {
+                auto* dialog = qobject_cast<QFileDialog*>(widget);
+                if (dialog && ownedDialog(dialog)) dialog->reject();
+            }
+            if (auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) dialog->reject();
+        });
+        picker.start();
+        watchdog.start(5000);
+        const bool invoked = QMetaObject::invokeMethod(&intro, "on_ellipsisButton_clicked", Qt::DirectConnection);
+        picker.stop();
+        watchdog.stop();
+        intro.hide();
+        if (!invoked || !selectionQueued || timedOut || heartbeats < 5 || intro.getDataDirectory() != selected)
+            record(QStringLiteral("intro-picker"), QStringLiteral(
+                "Directory picker failed: invoked=%1 selected=%2 timeout=%3 heartbeats=%4 exact_path=%5")
+                .arg(invoked).arg(selectionQueued).arg(timedOut).arg(heartbeats)
+                .arg(intro.getDataDirectory() == selected));
+#endif
+    }
+    const QString minerFixture = qEnvironmentVariable("GEOCOIN_TEST_GPU_MINER");
+    if (!minerFixture.isEmpty()) {
+        auto* mining = walletFrame->findChild<MiningPage*>();
+        QString detail;
+        if (!mining || !mining->runProcessLifecycleChecks(minerFixture, &detail))
+            record(QStringLiteral("mining-process"), detail);
+    }
     auto inspect = [&](QWidget* content, const QString& context) {
         for (QWidget* widget : content->findChildren<QWidget*>()) {
             if (!widget->isVisibleTo(content) || widget->isWindow()) continue;
@@ -113,6 +184,12 @@ bool GeoCoinGUI::runLayoutChecks(QString *error)
         for (const QString& theme : {QStringLiteral("light"), QStringLiteral("dark")}) {
             options.setTheme(theme);
             applyCurrentTheme();
+            themeToggleButton->click();
+            if (options.getTheme() == theme)
+                record(language + QLatin1Char('-') + theme, QStringLiteral("Theme button did not update settings"));
+            themeToggleButton->click();
+            if (options.getTheme() != theme)
+                record(language + QLatin1Char('-') + theme, QStringLiteral("Theme button did not restore theme"));
             for (const QSize& requested : sizes) {
                 resize(requested);
                 setNumConnections(128);
@@ -120,6 +197,18 @@ bool GeoCoinGUI::runLayoutChecks(QString *error)
                 updateMiningStatus(false, 0, 0.0, 0);
                 setSyncProgress(330.0 / 575.0, 330, 575);
                 settle();
+#ifdef Q_OS_LINUX
+                const QString borderContext = language + QLatin1Char('-') + theme;
+                if (!clientAreaFrame_ || clientAreaFrame_->geometry() != rect() ||
+                    !clientAreaFrame_->testAttribute(Qt::WA_TransparentForMouseEvents)) {
+                    record(borderContext, QStringLiteral("Client border geometry or mouse passthrough is invalid"));
+                } else {
+                    const QImage border = clientAreaFrame_->grab().toImage();
+                    const QColor expected(theme == QLatin1String("dark") ? QStringLiteral("#D6A84F") : QStringLiteral("#977E53"));
+                    if (border.isNull() || border.pixelColor(border.width() / 2, 0) != expected)
+                        record(borderContext, QStringLiteral("Client border did not render its theme color"));
+                }
+#endif
                 for (const QString& pageId : pages) {
                     const QString context = QStringLiteral("%1-%2-%3x%4-%5")
                         .arg(language, theme).arg(requested.width()).arg(requested.height()).arg(pageId);
@@ -153,10 +242,12 @@ bool GeoCoinGUI::runLayoutChecks(QString *error)
                     const int lineHeight = labelConnectionsText->fontMetrics().height();
                     if (statusBar()->height() < lineHeight || labelConnectionsText->height() < lineHeight)
                         record(context, QStringLiteral("Status bar clips its text"));
-                    const QString expectedMiningStatus = labelHashrateStatus->fontMetrics().elidedText(
-                        statusMiningText_, Qt::ElideRight, qMax(0, labelHashrateStatus->contentsRect().width()));
-                    if (labelHashrateStatus->text() != expectedMiningStatus)
-                        record(context, QStringLiteral("Mining status elision does not match its current width"));
+                    if (!labelHashrateStatus->text().contains(QStringLiteral("CPU")) ||
+                        !labelHashrateStatus->text().contains(QStringLiteral("GPU")) ||
+                        labelHashrateStatus->fontMetrics().horizontalAdvance(labelHashrateStatus->text()) > labelHashrateStatus->contentsRect().width())
+                        record(context, QStringLiteral("Total/CPU/GPU mining rates are clipped"));
+                    if (!themeToggleButton->isVisible() || !statusBar()->rect().contains(themeToggleButton->geometry()))
+                        record(context, QStringLiteral("Theme button is inaccessible"));
                     auto* toolbar = findChild<QToolBar*>(QStringLiteral("tabsToolbar"));
                     if (!toolbar || toolbar->actions().size() != 8)
                         record(context, QStringLiteral("Navigation lost an action"));
@@ -214,10 +305,20 @@ bool GeoCoinGUI::runLayoutChecks(QString *error)
 
     WalletModel fixture;
     fixture.setDataDirectory(dataDirectory);
-    const QString walletPath = fixture.getWalletFilePath();
+    const QString walletPath = QDir(dataDirectory).filePath(QStringLiteral("layout.wallet"));
     if (!fixture.createWallet(walletPath, QStringLiteral("layout-test-password"))) {
         record(QStringLiteral("wallet"), QStringLiteral("Cannot create isolated wallet fixture"));
     } else {
+        // Manual long-value fixtures must not race the model's async refresh.
+        fixture.beginQuiesce();
+        QElapsedTimer drain;
+        drain.start();
+        while (!fixture.isQuiesced() && drain.elapsed() < 5000) {
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            QThread::msleep(1);
+        }
+        if (!fixture.isQuiesced())
+            record(QStringLiteral("wallet"), QStringLiteral("Cannot drain isolated wallet refresh"));
         WalletModel* original = walletModel;
         setWalletModel(&fixture);
         auto checkDialog = [&](const QString& name, const auto& open) {

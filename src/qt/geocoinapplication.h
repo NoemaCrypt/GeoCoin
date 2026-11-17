@@ -20,7 +20,6 @@ class NetworkStyle;
 class QThread;
 class GeoCoinCore;
 class QTimer;
-class WalletSyncWorker;
 
 namespace geocoin { namespace wallet { class Wallet; } }
 
@@ -32,6 +31,8 @@ class GeoCoinApplication : public QApplication
 public:
     explicit GeoCoinApplication(int &argc, char **argv);
     ~GeoCoinApplication();
+    int exec();
+    bool isShutdownComplete() const { return shutdownComplete_; }
 
     /** Create main window */
     void createWindow(const NetworkStyle *networkStyle);
@@ -68,6 +69,11 @@ public:
 
     /** Password supplied by the startup wallet prompt. */
     void setStartupWalletPassword(const QString& password);
+    void setStartupWalletPath(const QString& path) { startupWalletPath_ = path; }
+    void setNetwork(const QString& network) { network_ = network; }
+    void setP2pPort(quint16 port) { p2pPort_ = port; }
+    void setActivationManifestPath(const QString& path) { activationManifestPath_ = path; }
+    bool isShuttingDown() const { return shutdownRequested; }
 
     /** Load UI language (en/ru/be). Returns true if translation loaded. */
     bool setLanguage(const QString &languageCode);
@@ -86,6 +92,7 @@ public slots:
 
     void initializeResult(bool success, const QString &error);
     void shutdownResult();
+    void shutdownFailed(const QString& error);
     void handleRunawayException(const QString &message);
     void runGuiSmokeTest();
     void runGuiE2eTest();
@@ -95,13 +102,15 @@ signals:
     void requestedShutdown();
     void stopThread();
     void splashFinished(QWidget *window);
+    void shutdownCompleted();
+    void shutdownError(const QString& error);
 
 private:
-    void prepareManagedWorkersForShutdown() noexcept;
-    void shutdownCoreThreadSynchronously() noexcept;
+    void drainShutdown();
     void stopCoreThread() noexcept;
     bool requestMiningStopAsync();
     bool reapMiningStopIfFinished();
+    void pollNodeStatus();
 
     QThread *coreThread;
     GeoCoinCore *executor;
@@ -110,13 +119,27 @@ private:
     GeoCoinGUI *window;
     QTimer *pollTimer;
     geocoin::node::NodeComponentHandle nodeComponents_{};
-    std::shared_ptr<WalletSyncWorker> walletSyncWorker_;
     ManagedAsyncAction miningStopAction_;
+    ManagedAsyncAction statusPollAction_;
+    std::shared_ptr<geocoin::node::NodeStatus> statusSnapshot_;
+    quint64 statusGeneration_ = 0;
+    quint64 statusSnapshotGeneration_ = 0;
+    qint64 lastStatusRequestMs_ = 0;
+    bool statusPending_ = false;
+    bool statusFailureReported_ = false;
     QString dataDirectory;
     QStringList addNodes;
     QStringList connectPeers;
     QString miningSha256Backend;
     QString startupWalletPassword_;
+    QString startupWalletPath_;
+    QString network_ = QStringLiteral("degree");
+    quint16 p2pPort_ = 0;
+    QString activationManifestPath_;
+    QTimer* shutdownPollTimer_ = nullptr;
+    bool coreShutdownQueued_ = false;
+    bool shutdownMiningStarted_ = false;
+    bool shutdownComplete_ = false;
     bool noAutoConnect;
     int returnValue;
     bool shutdownRequested;

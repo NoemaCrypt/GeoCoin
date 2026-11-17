@@ -11,7 +11,6 @@
 #include "networkstyle.h"
 #include "intro.h"
 #include "guiutil.h"
-#include "walletsyncworker.h"
 
 #include "geocoin/wallet/wallet.hpp"
 #include "geocoin/consensus/consensus.hpp"
@@ -30,6 +29,7 @@
 #include <QSplashScreen>
 #include <QPixmap>
 #include <QFile>
+#include <QFileInfo>
 #include <QTextStream>
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -130,41 +130,27 @@ GeoCoinApplication::GeoCoinApplication(int &argc, char **argv)
 
 GeoCoinApplication::~GeoCoinApplication()
 {
-    try {
-        prepareManagedWorkersForShutdown();
-        if (!shutdownRequested) {
-            shutdownCoreThreadSynchronously();
-        }
-        stopCoreThread();
-
-        delete window;
-        window = nullptr;
-    } catch (const std::exception& e) {
-        // Suppress exceptions in destructor
-    } catch (...) {
-        // Suppress all exceptions in destructor
-    }
+    // QApplication is still alive here. A failed stop keeps its owners alive
+    // and its retry UI usable; destruction cannot safely impose a deadline.
+    drainShutdown();
+    GUIUtil::cleanseQString(startupWalletPassword_);
 }
 
-void GeoCoinApplication::prepareManagedWorkersForShutdown() noexcept
+int GeoCoinApplication::exec()
 {
-    try {
-        if (nodeComponents_.services.events) {
-            nodeComponents_.services.events->clear_transaction_callback();
-            nodeComponents_.services.events->clear_chain_mutation_event_callback();
-        }
-        if (walletSyncWorker_) {
-            walletSyncWorker_->stopAndDrain();
-            walletSyncWorker_.reset();
-        }
+    const int result = QApplication::exec();
+    if (result != 0) returnValue = result;
+    drainShutdown();
+    return result;
+}
 
-        if (window) {
-            window->waitForPendingMiningStop();
-        }
-        miningStopAction_.wait();
-    } catch (...) {
-        // Destruction/shutdown must continue even if a worker reports failure.
-    }
+void GeoCoinApplication::drainShutdown()
+{
+    if (shutdownComplete_) return;
+    requestShutdown();
+    // QApplication::exec resets Qt's quit state after an external exit().
+    // Do not destroy the core merely because an outer event loop was exited.
+    while (!shutdownComplete_) QApplication::exec();
 }
 
 bool GeoCoinApplication::requestMiningStopAsync()
@@ -184,19 +170,6 @@ bool GeoCoinApplication::reapMiningStopIfFinished()
     return miningStopAction_.reapIfFinished();
 }
 
-void GeoCoinApplication::shutdownCoreThreadSynchronously() noexcept
-{
-    if (!executor || !coreThread || !coreThread->isRunning()) {
-        return;
-    }
-
-    // Из GUI-потока синхронно вызываем shutdown() в core-потоке.
-    if (QThread::currentThread() == coreThread) {
-        return;
-    }
-
-    (void)QMetaObject::invokeMethod(executor, "shutdown", Qt::BlockingQueuedConnection);
-}
 
 void GeoCoinApplication::stopCoreThread() noexcept
 {
@@ -311,8 +284,8 @@ void GeoCoinApplication::createWindow(const NetworkStyle *networkStyle)
     window->setDataDirectory(dataDirectory);
 
     // Create poll timer in main thread (before initialization)
-    pollTimer = new QTimer(window);
-    pollTimer->setInterval(2000);
+    pollTimer = new QTimer(this);
+    pollTimer->setInterval(100);
     pollTimer->setTimerType(Qt::CoarseTimer);
 
     // Показываем окно сразу: пользователь видит инициализацию в реальном времени.
@@ -336,11 +309,9 @@ void GeoCoinApplication::startThread()
     executor->setConnectPeers(connectPeers);
     executor->setNoAutoConnect(noAutoConnect);
     executor->setMiningSha256Backend(miningSha256Backend.isEmpty() ? QStringLiteral("auto") : miningSha256Backend);
-    executor->setWalletPassword(startupWalletPassword_);
-    startupWalletPassword_.detach();
-    startupWalletPassword_.fill(QChar('\0'));
-    startupWalletPassword_.clear();
-    startupWalletPassword_.squeeze();
+    executor->setRuntimeOptions(network_, p2pPort_, activationManifestPath_);
+    if (!property("geocoinTestDataDirectory").toString().isEmpty() && network_ == QStringLiteral("degree-load"))
+        executor->setProperty("geocoinTestStopFailures", property("geocoinTestCoreStopFailures"));
     executor->moveToThread(coreThread);
 
     // Communication to and from thread
@@ -348,6 +319,7 @@ void GeoCoinApplication::startThread()
             this, SLOT(initializeResult(bool, const QString&)));
     connect(executor, SIGNAL(shutdownResult()),
             this, SLOT(shutdownResult()));
+    connect(executor, &GeoCoinCore::shutdownFailed, this, &GeoCoinApplication::shutdownFailed);
     connect(executor, SIGNAL(runawayException(const QString&)),
             this, SLOT(handleRunawayException(const QString&)));
     connect(this, SIGNAL(requestedInitialize()),
@@ -356,7 +328,7 @@ void GeoCoinApplication::startThread()
             executor, SLOT(shutdown()));
 
     // Make sure executor object is deleted in its own thread
-    connect(this, SIGNAL(stopThread()), executor, SLOT(deleteLater()));
+    connect(coreThread, &QThread::finished, executor, &QObject::deleteLater);
     connect(this, SIGNAL(stopThread()), coreThread, SLOT(quit()));
 
     coreThread->start();
@@ -364,6 +336,7 @@ void GeoCoinApplication::startThread()
 
 void GeoCoinApplication::requestInitialize()
 {
+    if (shutdownRequested || coreThread) return;
     startThread();
     emit requestedInitialize();
 }
@@ -383,52 +356,57 @@ void GeoCoinApplication::requestGuiE2eTest()
 
 void GeoCoinApplication::requestShutdown()
 {
-    // Prevent multiple shutdown requests
-    if (shutdownRequested) {
-        return;
-    }
+    if (shutdownRequested) return;
     shutdownRequested = true;
-
-    if (smokeTestMode_ || !executor) {
-        prepareManagedWorkersForShutdown();
-        quit();
-        return;
+    ++statusGeneration_;
+    for (auto* timer : findChildren<QTimer*>(QString(), Qt::FindDirectChildrenOnly)) {
+        timer->stop();
+        timer->disconnect();
     }
+    if (window) window->beginShutdown();
+    if (walletModel) walletModel->beginQuiesce();
 
-    try {
-        // Hide window if still visible
-        if (window) {
-            window->hide();
+    shutdownPollTimer_ = new QTimer(this);
+    shutdownPollTimer_->setInterval(25);
+    connect(shutdownPollTimer_, &QTimer::timeout, this, [this]() {
+        if (coreShutdownQueued_) return;
+        if (window && !window->minersStopped()) return;
+        if (!shutdownMiningStarted_) {
+            shutdownMiningStarted_ = true;
+            requestMiningStopAsync();
         }
-
-        // Stop poll timer
-        if (pollTimer) {
-            pollTimer->stop();
+        if (!reapMiningStopIfFinished()) return;
+        if (!statusPollAction_.reapIfFinished()) return;
+        if (walletModel && !walletModel->isQuiesced()) {
+            if (walletModel->walletOperationCode() == QStringLiteral("wallet_sync_stop_failed")) {
+                shutdownPollTimer_->stop();
+                shutdownFailed(walletModel->walletOperationError());
+            }
+            return;
         }
-
-        // Unsubscribe from wallet signals BEFORE shutdown
-        if (walletModel) {
-            walletModel->unsubscribeFromCoreSignals();
+        if (miningStopAction_.failed()) {
+            qCritical() << "CPU stop action failed [cpu_stop_failed]; retaining the node for authoritative core shutdown";
         }
-
-        // Stop accepting callbacks, drain wallet sync in FIFO order and join
-        // any asynchronous mining stop before the core releases node/wallet.
-        prepareManagedWorkersForShutdown();
-
-        // Request shutdown from core thread (will emit shutdownResult when done)
-        // Models will be deleted in shutdownResult AFTER core shutdown completes
-        emit requestedShutdown();
-    } catch (const std::exception& e) {
-        // Still try to shutdown
-        emit requestedShutdown();
-    } catch (...) {
-        // Still try to shutdown
-        emit requestedShutdown();
-    }
+        coreShutdownQueued_ = true;
+        shutdownPollTimer_->stop();
+        // Pages, timer closures and models can all own node/DB services.
+        // Destroy them before the core, and join the core before returning main.
+        delete window;
+        window = nullptr;
+        delete walletModel;
+        walletModel = nullptr;
+        delete clientModel;
+        clientModel = nullptr;
+        nodeComponents_ = {};
+        if (executor) emit requestedShutdown();
+        else shutdownResult();
+    });
+    shutdownPollTimer_->start();
 }
 
 void GeoCoinApplication::runGuiSmokeTest()
 {
+    if (shutdownRequested) return;
     writeSmokeTrace(QStringLiteral("runGuiSmokeTest entered"));
     QString error;
     if (!window) {
@@ -456,6 +434,7 @@ void GeoCoinApplication::runGuiSmokeTest()
 
 void GeoCoinApplication::runGuiE2eTest()
 {
+    if (shutdownRequested) return;
     struct E2eState {
         enum Phase {
             WaitPeers,
@@ -502,7 +481,7 @@ void GeoCoinApplication::runGuiE2eTest()
     auto state = std::make_shared<E2eState>();
     state->elapsed.start();
     state->lastTickMs = 0;
-    state->startHeight = nodeInfo->get_status().current_height;
+    state->startHeight = clientModel->getCachedStatus().current_height;
 
     const int peerTimeoutSec = envInt("GEOCOIN_QT_E2E_PEER_TIMEOUT_SEC", 180, 15, 1800);
     const int syncTimeoutSec = envInt("GEOCOIN_QT_E2E_SYNC_TIMEOUT_SEC", 600, 30, 3600);
@@ -540,6 +519,7 @@ void GeoCoinApplication::runGuiE2eTest()
     timer->setTimerType(Qt::PreciseTimer);
 
     QObject::connect(timer, &QTimer::timeout, this, [this, timer, state, nodeInfo, miningControl, chainState, desiredPeers, miningThreads, peerTimeoutSec, syncTimeoutSec, totalTimeoutSec, watchdogSec, extraBlocksAfterTx, propagationWaitSec]() {
+        if (shutdownRequested) return;
         const qint64 nowMs = state->elapsed.elapsed();
         if (state->lastTickMs > 0 && nowMs - state->lastTickMs > static_cast<qint64>(watchdogSec) * 1000) {
             qCritical() << "GeoCoin GUI e2e failed: event loop watchdog detected UI stall";
@@ -554,7 +534,7 @@ void GeoCoinApplication::runGuiE2eTest()
         }
         state->lastTickMs = nowMs;
 
-        const auto status = nodeInfo->get_status();
+        const auto status = clientModel->getCachedStatus();
         if (nowMs > static_cast<qint64>(totalTimeoutSec) * 1000) {
             qCritical() << "GeoCoin GUI e2e failed: timeout";
             writeGuiE2eTrace(dataDirectory, QStringLiteral("FAIL timeout phase=%1 height=%2 peers=%3 mining=%4 txid=%5")
@@ -653,8 +633,8 @@ void GeoCoinApplication::runGuiE2eTest()
             }
             const geocoin::Address address(miningAddress.toStdString());
             if (!miningControl->start_mining(static_cast<size_t>(miningThreads), address)) {
-                if (nodeInfo->get_status().mining_blocked_by_sync) {
-                    const auto blockedStatus = nodeInfo->get_status();
+                if (clientModel->getCachedStatus().mining_blocked_by_sync) {
+                    const auto blockedStatus = clientModel->getCachedStatus();
                     writeGuiE2eTrace(dataDirectory, QStringLiteral("mining deferred until sync height=%1 best_peer=%2 reason=%3")
                         .arg(blockedStatus.current_height)
                         .arg(blockedStatus.best_peer_height)
@@ -764,8 +744,8 @@ void GeoCoinApplication::runGuiE2eTest()
         case E2eState::StartMiningConfirmation: {
             const geocoin::Address address(walletModel->getAddress().toStdString());
             if (!miningControl->start_mining(static_cast<size_t>(miningThreads), address)) {
-                if (nodeInfo->get_status().mining_blocked_by_sync) {
-                    const auto blockedStatus = nodeInfo->get_status();
+                if (clientModel->getCachedStatus().mining_blocked_by_sync) {
+                    const auto blockedStatus = clientModel->getCachedStatus();
                     writeGuiE2eTrace(dataDirectory, QStringLiteral("confirmation mining deferred until sync height=%1 best_peer=%2 reason=%3")
                         .arg(blockedStatus.current_height)
                         .arg(blockedStatus.best_peer_height)
@@ -884,6 +864,7 @@ void GeoCoinApplication::runGuiE2eTest()
 
 void GeoCoinApplication::initializeResult(bool success, const QString &error)
 {
+    if (shutdownRequested) return;
     // Set exit result
     returnValue = success ? 0 : 1;
 
@@ -891,11 +872,11 @@ void GeoCoinApplication::initializeResult(bool success, const QString &error)
         // Receive one coherent owning runtime bundle. The concrete Node stays
         // inside GeoCoinCore and never leaks into ordinary GUI code.
         auto components = executor->getNodeComponents();
-        auto wallet = executor->getWallet();
-        if (!components.complete() || !wallet) {
+        auto wallet = std::make_shared<geocoin::wallet::Wallet>();
+        if (!components.complete()) {
             qCritical() << "GeoCoin initialization returned incomplete runtime components";
             returnValue = 1;
-            quit();
+            requestShutdown();
             return;
         }
         nodeComponents_ = components;
@@ -905,11 +886,12 @@ void GeoCoinApplication::initializeResult(bool success, const QString &error)
         clientModel->setNodeComponents(components);
 
         walletModel = new WalletModel(this);
-        walletModel->setDataDirectory(dataDirectory);
+        const QString walletDataDir = executor->getNodeDataDirectory();
+        walletModel->setDataDirectory(walletDataDir);
         if (!walletModel->setRuntimeContext(wallet, components)) {
             qCritical() << "GeoCoin initialization could not bind the GUI runtime context";
             returnValue = 1;
-            quit();
+            requestShutdown();
             return;
         }
 
@@ -917,71 +899,43 @@ void GeoCoinApplication::initializeResult(bool success, const QString &error)
         // The isolated GUI E2E harness creates a temporary unencrypted wallet so
         // its existing non-interactive transaction scenario remains usable.
         if (guiE2eTestMode_ && !walletModel->isWalletLoaded() &&
-            !walletModel->createWallet(walletModel->getWalletFilePath(), QString())) {
+            !walletModel->createWallet(QDir(dataDirectory).filePath(QStringLiteral("e2e.wallet")), QString())) {
             qCritical() << "GeoCoin GUI e2e failed: could not create temporary wallet";
             returnValue = 1;
             requestShutdown();
             return;
         }
 
-        // Подписываемся на сигналы кошелька.
-        walletModel->subscribeToCoreSignals();
-
-        // Node callbacks can arrive concurrently from mining/network threads.
-        // A single bounded worker preserves FIFO wallet updates without ever
-        // blocking the chain writer. Gaps recover from chain and mempool state.
-        std::weak_ptr<geocoin::node::ChainQueryService> weakChainQuery =
-            components.services.chain_query;
-        walletSyncWorker_ = std::make_shared<WalletSyncWorker>(
-            wallet,
-            components.chain_state,
-            [weakChainQuery]() {
-                if (const auto query = weakChainQuery.lock()) {
-                    return query->get_mempool_transactions();
-                }
-                return std::vector<geocoin::core::Transaction>{};
-            }
-        );
-        std::weak_ptr<WalletSyncWorker> walletSyncWorker = walletSyncWorker_;
-        components.services.events->set_chain_mutation_event_callback([walletSyncWorker](
-            const geocoin::services::ChainMutationEvent& event) {
-            if (auto worker = walletSyncWorker.lock()) {
-                (void)worker->enqueue(event);
-            }
-        });
 
         // Set models in window (window is already visible)
         window->setClientModel(clientModel);
         window->setWalletModel(walletModel);
-
-        // Setup update timer (timer was created in main thread in createWindow)
-        const auto nodeInfo = components.services.info;
-        connect(pollTimer, &QTimer::timeout, [this, nodeInfo]() {
-            auto status = nodeInfo->get_status();
-            clientModel->updateNumBlocks(status.current_height);
-            clientModel->updateNumConnections(status.authenticated_peers);
-            clientModel->updateMining(status.mining, status.mining_threads, status.hashrate, status.mined_blocks_accepted);
-
-            // Периодически опрашиваем кошелек на изменения баланса.
-            walletModel->pollBalanceChanged();
-
-            if (status.syncing && status.target_height > 0) {
-                double progress = (double)status.current_height / (double)status.target_height;
-                window->setSyncProgress(progress, status.current_height, status.target_height);
-            } else {
-                int rescan_current = 0;
-                int rescan_target = 0;
-                if (walletModel->getRescanProgress(rescan_current, rescan_target)) {
-                    double progress = (rescan_target > 0)
-                        ? (double)rescan_current / (double)rescan_target
-                        : 0.0;
-                    window->setSyncProgress(progress, rescan_current, rescan_target);
-                } else {
-                    window->setSyncProgress(1.0, status.current_height, status.current_height);
-                }
-            }
+        connect(clientModel, &ClientModel::message, window, [this](const QString& title, const QString& text, unsigned int) {
+            if (shutdownRequested || !window) return;
+            auto* message = new QMessageBox(QMessageBox::Warning, title, text, QMessageBox::Ok, window);
+            message->setTextFormat(Qt::PlainText);
+            message->setWindowModality(Qt::NonModal);
+            message->setAttribute(Qt::WA_DeleteOnClose);
+            message->show();
         });
+        QString initialPath = WalletModel::initialWalletPath(walletDataDir, startupWalletPath_);
+        if (initialPath.isEmpty() && startupWalletPath_.isEmpty()) {
+            const QString networkDefault = QDir(walletDataDir).filePath(QStringLiteral("wallet.dat"));
+            const QString legacyDefault = QDir(dataDirectory).filePath(QStringLiteral("wallet.dat"));
+            if (QFileInfo::exists(networkDefault)) initialPath = networkDefault;
+            else if (QFileInfo::exists(legacyDefault)) initialPath = legacyDefault;
+        }
+        if (!guiE2eTestMode_ && !initialPath.isEmpty()) {
+            QTimer::singleShot(0, this, [this, initialPath]() {
+                if (shutdownRequested || !window) return;
+                window->openWalletPath(initialPath, startupWalletPassword_);
+                GUIUtil::cleanseQString(startupWalletPassword_);
+            });
+        }
+
+        connect(pollTimer, &QTimer::timeout, this, &GeoCoinApplication::pollNodeStatus);
         pollTimer->start();
+        pollNodeStatus();
 
         if (guiE2eTestMode_) {
             QTimer::singleShot(0, this, &GeoCoinApplication::requestGuiE2eTest);
@@ -995,32 +949,88 @@ void GeoCoinApplication::initializeResult(bool success, const QString &error)
             QMessageBox::critical(nullptr, tr("GeoCoin"),
                 tr("Initialization failed: %1").arg(error));
         }
-        quit();
+        requestShutdown();
     }
 }
 
 void GeoCoinApplication::shutdownResult()
 {
-    try {
-        // Delete models AFTER core shutdown completes
-        delete walletModel;
-        walletModel = nullptr;
+    if (!shutdownRequested || shutdownComplete_) return;
+    stopCoreThread();
+    executor = nullptr;
+    shutdownComplete_ = true;
+    emit shutdownCompleted();
+    QApplication::exit(0);
+}
 
-        delete clientModel;
-        clientModel = nullptr;
-
-        nodeComponents_ = {};
-
-        quit(); // Exit main loop after shutdown finished
-    } catch (const std::exception& e) {
-        quit(); // Still exit
-    } catch (...) {
-        quit(); // Still exit
+void GeoCoinApplication::pollNodeStatus()
+{
+    if (shutdownRequested || !clientModel || !walletModel || !window ||
+        !statusPollAction_.reapIfFinished()) return;
+    if (statusPending_) {
+        statusPending_ = false;
+        if (!statusPollAction_.failed() && statusSnapshotGeneration_ == statusGeneration_) {
+            const auto& status = *statusSnapshot_;
+            statusFailureReported_ = false;
+            clientModel->updateStatus(status);
+            walletModel->pollBalanceChanged();
+            if (status.syncing && status.target_height > 0) {
+                window->setSyncProgress(static_cast<double>(status.current_height) / status.target_height,
+                    status.current_height, status.target_height);
+            } else {
+                int current = 0;
+                int target = 0;
+                if (walletModel->getRescanProgress(current, target)) {
+                    window->setSyncProgress(target > 0 ? static_cast<double>(current) / target : 0.0, current, target);
+                } else {
+                    window->setSyncProgress(1.0, status.current_height, status.current_height);
+                }
+            }
+        } else if (statusPollAction_.failed() && !statusFailureReported_) {
+            statusFailureReported_ = true;
+            emit clientModel->message(tr("Node Status"), tr("Status refresh failed [status_read_failed]. The last snapshot is retained; refresh will retry."), 2);
+        }
     }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - lastStatusRequestMs_ < 2000) return;
+    lastStatusRequestMs_ = now;
+    statusSnapshot_ = std::make_shared<geocoin::node::NodeStatus>();
+    statusSnapshotGeneration_ = statusGeneration_;
+    const auto snapshot = statusSnapshot_;
+    const auto info = nodeComponents_.services.info;
+    if (!info) return;
+    statusPending_ = statusPollAction_.start([info, snapshot]() {
+        *snapshot = info->get_status();
+    });
+}
+
+void GeoCoinApplication::shutdownFailed(const QString& error)
+{
+    if (!shutdownRequested) return;
+    returnValue = 1;
+    qCritical().noquote() << error;
+    auto* message = new QMessageBox(QMessageBox::Critical, tr("Shutdown Could Not Finish"),
+        error + tr("\nThe node and database remain owned and locked. Retry shutdown to complete cleanup."),
+        QMessageBox::Retry);
+    message->setTextFormat(Qt::PlainText);
+    message->setWindowModality(Qt::NonModal);
+    message->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint);
+    message->setAttribute(Qt::WA_DeleteOnClose);
+    connect(message, &QMessageBox::finished, this, [this](int) {
+        if (!coreShutdownQueued_) {
+            if (walletModel) walletModel->beginQuiesce();
+            if (shutdownPollTimer_) shutdownPollTimer_->start();
+        } else if (executor && coreThread && coreThread->isRunning()) {
+            emit requestedShutdown();
+        }
+    });
+    message->show();
+    emit shutdownError(error);
 }
 
 void GeoCoinApplication::handleRunawayException(const QString &message)
 {
+    if (shutdownRequested) return;
     if (smokeTestMode_) {
         qCritical() << "GeoCoin fatal error during smoke mode:" << message;
     } else {
@@ -1028,5 +1038,6 @@ void GeoCoinApplication::handleRunawayException(const QString &message)
             tr("A fatal error occurred. GeoCoin can no longer continue safely and will quit.") +
             QString("\n\n") + message);
     }
-    ::exit(1);
+    returnValue = 1;
+    requestShutdown();
 }

@@ -7,12 +7,31 @@
 #include "nlohmann_json.hpp"
 
 #include <filesystem>
+#include <set>
 #include <stdexcept>
+#include <type_traits>
 #include <openssl/rand.h>
 
 namespace geocoin::wallet {
 namespace {
 using json = nlohmann::json;
+
+template<class T>
+T integer(const json& value) {
+    if (value.is_number_unsigned()) {
+        const auto number = value.get<uint64_t>();
+        if (number <= static_cast<uint64_t>((std::numeric_limits<T>::max)())) return static_cast<T>(number);
+    } else if (value.is_number_integer()) {
+        const auto number = value.get<int64_t>();
+        if constexpr (std::is_signed_v<T>) {
+            if (number >= (std::numeric_limits<T>::min)() && number <= (std::numeric_limits<T>::max)())
+                return static_cast<T>(number);
+        } else if (number >= 0 && static_cast<uint64_t>(number) <= (std::numeric_limits<T>::max)()) {
+            return static_cast<T>(number);
+        }
+    }
+    throw std::runtime_error("Invalid wallet integer field");
+}
 
 uint64_t unix_time() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -42,23 +61,23 @@ bool commit_document(const std::string& filename, const bytes& body, bool backup
     const bool written = write_all_to_fd(fd, body.data(), body.size());
     const bool synced = written ? sync_and_close_fd(fd) : (close_fd_without_sync(fd), false);
     std::error_code ec;
-    if (!synced) { std::filesystem::remove(temporary, ec); return false; }
-    if (std::filesystem::exists(filename, ec)) {
-        if (!is_regular_private_file(filename)) { std::filesystem::remove(temporary, ec); return false; }
+    if (!synced) { std::filesystem::remove(wallet_path(temporary), ec); return false; }
+    if (std::filesystem::exists(wallet_path(filename), ec)) {
+        if (!is_regular_private_file(filename)) { std::filesystem::remove(wallet_path(temporary), ec); return false; }
         if (backup) {
             const std::string previous = filename + ".bak";
-            std::filesystem::remove(previous, ec);
+            std::filesystem::remove(wallet_path(previous), ec);
             if (ec || !rename_file_durably(filename, previous, false, ec)) {
-                std::filesystem::remove(temporary, ec); return false;
+                std::filesystem::remove(wallet_path(temporary), ec); return false;
             }
         }
     }
     if (!rename_file_durably(temporary, filename, replace, ec)) {
-        if (backup && !std::filesystem::exists(filename)) {
+        if (backup && !std::filesystem::exists(wallet_path(filename))) {
             std::error_code restore;
             (void)rename_file_durably(filename + ".bak", filename, false, restore);
         }
-        std::filesystem::remove(temporary, ec);
+        std::filesystem::remove(wallet_path(temporary), ec);
         return false;
     }
     return true;
@@ -195,6 +214,8 @@ bool Wallet::unlock(const std::string& password, uint32_t timeout_seconds) {
 
 bool Wallet::enable_vault(const std::string& password) {
     std::lock_guard<std::mutex> guard(mutex_);
+    if (!file_path_.empty() && (loaded_format_ == WalletFileFormat::LEGACY_V11 ||
+        loaded_format_ == WalletFileFormat::LEGACY_V12)) return false;
     if (vault_mode_ || password.empty() || keys_.empty() ||
         (has_password_hash_ && !verify_password_material(password, has_password_hash_, password_hash_, password_salt_, password_kdf_iterations_)))
         return false;
@@ -217,7 +238,7 @@ bool Wallet::enable_vault(const std::string& password) {
     utils::cleanse_container(password_salt_); password_kdf_iterations_ = 0;
     lock_keys_locked();
     std::error_code backup_error;
-    std::filesystem::remove((file_path_.empty() ? get_default_wallet_path() : file_path_) + ".bak", backup_error);
+    std::filesystem::remove(wallet_path((file_path_.empty() ? get_default_wallet_path() : file_path_) + ".bak"), backup_error);
     if (backup_error || !sync_parent_directory(file_path_)) { last_save_status_ = SaveStatus::COMMITTED_NOT_DURABLE; return false; }
     return true;
 }
@@ -225,7 +246,7 @@ bool Wallet::enable_vault(const std::string& password) {
 bool Wallet::save_vault_locked(const std::string& filename, bool preserve_backup) const {
     auto* self = const_cast<Wallet*>(this);
     last_save_status_ = SaveStatus::FAILED;
-    const bool live = file_path_.empty() || std::filesystem::absolute(filename).lexically_normal() == std::filesystem::path(file_path_);
+    const bool live = file_path_.empty() || absolute_wallet_path(filename) == file_path_;
     if (live && vault_saved_revision_ == wallet_revision_ && is_regular_private_file(filename)) {
         last_save_status_ = SaveStatus::DURABLE; return true;
     }
@@ -268,19 +289,26 @@ bool Wallet::save_vault_locked(const std::string& filename, bool preserve_backup
     }
     if (!commit_document(filename, file, preserve_backup, live)) return false;
     const bool durable = sync_parent_directory(filename);
-    if (file_path_.empty()) file_path_ = std::filesystem::absolute(filename).lexically_normal().string();
+    if (file_path_.empty()) file_path_ = absolute_wallet_path(filename);
     last_save_status_ = durable ? SaveStatus::DURABLE : SaveStatus::COMMITTED_NOT_DURABLE;
     if (durable && live) { vault_saved_checksum_ = checksum; vault_saved_revision_ = wallet_revision_; }
     return durable;
 }
 
-bool Wallet::load_vault_locked(const std::string& filename, const std::string& password) {
+bool Wallet::load_vault_locked(const std::string& filename, const std::string& password,
+    WalletLoadResult& result) {
+    result.format = WalletFileFormat::VAULT_GEOV;
+    result.encrypted = true;
+    result.error = WalletLoadError::CORRUPT_DATA;
     try {
         uint64_t size = 0;
         ScopedReadFd fd(open_secure_input_file(filename, size));
-        if (fd.get() < 0 || size < 40 || size > kMaxWalletPayloadSize + 40) return false;
+        if (fd.get() < 0) { result.error = WalletLoadError::IO_ERROR; return false; }
+        if (size > kMaxWalletPayloadSize + 40) { result.error = WalletLoadError::RESOURCE_LIMIT; return false; }
+        if (size < 40) return false;
         bytes file(size);
         if (!read_all_from_fd(fd.get(), file.data(), file.size())) return false;
+        if (!std::equal(file.begin(), file.begin() + 4, std::array<byte, 4>{'G', 'E', 'O', 'V'}.begin())) return false;
         uint32_t length = 0;
         for (unsigned i = 0; i < 4; ++i) length |= uint32_t(file[4 + i]) << (8 * i);
         if (uint64_t(length) + 40 != size) return false;
@@ -292,14 +320,17 @@ bool Wallet::load_vault_locked(const std::string& filename, const std::string& p
                 if (depth > 64) throw std::runtime_error("Wallet metadata nesting limit");
                 return true;
             });
-        if (document.at("format") != 1) return false;
+        result.version = integer<uint32_t>(document.at("format"));
+        if (result.version != 1) { result.error = WalletLoadError::UNSUPPORTED_VERSION; return false; }
+        if (!document.at("keys").is_array() || !document.at("transactions").is_array() ||
+            !document.at("multisig").is_array()) return false;
         WalletLoadScratch loaded;
         for (const auto& key : document.at("keys")) {
             KeyInfo info;
             info.address = Address(key.at("address").get<std::string>());
             if (!crypto::verify_address(info.address)) return false;
             info.label = key.at("label").get<std::string>();
-            info.created_at = key.at("created").get<uint64_t>(); info.used = key.at("used").get<bool>();
+            info.created_at = integer<uint64_t>(key.at("created")); info.used = key.at("used").get<bool>();
             if (!loaded.keys.emplace(info.address, std::move(info)).second) return false;
         }
         loaded.primary_address = Address(document.at("primary").get<std::string>());
@@ -308,25 +339,28 @@ bool Wallet::load_vault_locked(const std::string& filename, const std::string& p
             WalletTransaction tx;
             tx.tx = core::Transaction::deserialize_canonical(decode(entry.at("hex")));
             tx.tx_hash = tx.tx.get_hash(); tx.is_coinbase = tx.tx.is_coinbase();
-            tx.block_height = entry.at("height").get<Height>(); tx.timestamp = entry.at("time").get<uint64_t>();
-            tx.amount = entry.at("amount").get<Amount>(); tx.fee = entry.at("fee").get<uint64_t>();
+            tx.block_height = integer<Height>(entry.at("height")); tx.timestamp = integer<uint64_t>(entry.at("time"));
+            tx.amount = integer<Amount>(entry.at("amount")); tx.fee = integer<uint64_t>(entry.at("fee"));
             tx.memo = entry.at("memo").get<std::string>(); tx.block_hash = hash(entry.at("blockhash"));
-            tx.block_index = entry.at("blockindex").get<uint32_t>(); tx.block_time = entry.at("blocktime").get<Timestamp>();
-            tx.change_outputs = entry.at("change").get<std::vector<uint32_t>>();
+            tx.block_index = integer<uint32_t>(entry.at("blockindex")); tx.block_time = integer<Timestamp>(entry.at("blocktime"));
+            if (!entry.at("change").is_array() || !entry.at("conflicts").is_array() || !entry.at("removed").is_array()) return false;
+            for (const auto& index : entry.at("change")) tx.change_outputs.push_back(integer<uint32_t>(index));
+            if (std::set<uint32_t>(tx.change_outputs.begin(), tx.change_outputs.end()).size() != tx.change_outputs.size()) return false;
             tx.broadcast = entry.at("broadcast").get<bool>();
-            tx.received_at = entry.at("received").get<uint64_t>();
+            tx.received_at = integer<uint64_t>(entry.at("received"));
             for (const auto& conflict : entry.at("conflicts")) tx.note_conflict(hash(conflict.at("txid")),
-                {hash(conflict.at("hash")), conflict.at("height").get<Height>(), conflict.at("index").get<uint32_t>(), conflict.at("time").get<Timestamp>()});
+                {hash(conflict.at("hash")), integer<Height>(conflict.at("height")), integer<uint32_t>(conflict.at("index")), integer<Timestamp>(conflict.at("time"))});
             for (auto index : tx.change_outputs) if (index >= tx.tx.outputs.size()) return false;
             for (const auto& location : entry.at("removed")) tx.removed_blocks.push_back({hash(location.at("hash")),
-                location.at("height").get<Height>(), location.at("index").get<uint32_t>(), location.at("time").get<Timestamp>()});
+                integer<Height>(location.at("height")), integer<uint32_t>(location.at("index")), integer<Timestamp>(location.at("time"))});
             if (!loaded.tx_index.emplace(tx.tx_hash, loaded.transactions.size()).second) return false;
             loaded.transactions.push_back(std::move(tx));
         }
         for (const auto& entry : document.at("multisig")) {
             MultisigConfig config;
             config.address = Address(entry.at("address").get<std::string>());
-            config.m = entry.at("m").get<uint8_t>(); config.n = entry.at("n").get<uint8_t>();
+            config.m = integer<uint8_t>(entry.at("m")); config.n = integer<uint8_t>(entry.at("n"));
+            if (!entry.at("participants").is_array()) return false;
             for (const auto& participant : entry.at("participants")) {
                 Address address(participant.get<std::string>());
                 config.addresses.push_back(address); config.participants.emplace_back(address);
@@ -334,19 +368,50 @@ bool Wallet::load_vault_locked(const std::string& filename, const std::string& p
             if (!validate_multisig_config(config.address, config) ||
                 !loaded.multisig_addresses.emplace(config.address.str(), config).second) return false;
         }
-        const auto wrapped = decode(document.at("wrapped_master"));
-        const auto encrypted = decode(document.at("key_vault"));
+        auto wrapped = decode(document.at("wrapped_master"));
+        auto encrypted = decode(document.at("key_vault"));
         if (wrapped.size() != 76 || encrypted.size() < 48) return false;
         if (!password.empty()) {
-            bytes master;
-            SensitiveBytesGuard guard{master};
-            if (!crypto::decrypt_aes256(wrapped, password, master) || master.size() != 32) return false;
+            bytes master, material;
+            SensitiveBytesGuard guard{master}, material_guard{material};
+            if (!crypto::decrypt_aes256(wrapped, password, master) || master.size() != 32) {
+                result.error = WalletLoadError::AUTHENTICATION_FAILED; return false;
+            }
+            std::string secret(master.begin(), master.end());
+            utils::ScopedContainerCleanser secret_guard(secret);
+            if (!crypto::decrypt_aes256(encrypted, secret, material, 1)) {
+                result.error = WalletLoadError::AUTHENTICATION_FAILED; return false;
+            }
+            size_t offset = 0;
+            auto u32 = [&]() {
+                if (material.size() - offset < 4) throw std::runtime_error("Truncated key vault");
+                uint32_t value = 0;
+                for (unsigned i = 0; i < 4; ++i) value |= uint32_t(material[offset++]) << (i * 8);
+                return value;
+            };
+            if (u32() != loaded.keys.size()) return false;
+            std::set<Address> seen;
+            for (size_t i = 0; i < loaded.keys.size(); ++i) {
+                const auto length = u32();
+                if (length > material.size() - offset || material.size() - offset - length < 32) return false;
+                Address address(std::string(material.begin() + offset, material.begin() + offset + length));
+                offset += length;
+                bytes seed(material.begin() + offset, material.begin() + offset + 32);
+                SensitiveBytesGuard seed_guard{seed};
+                offset += 32;
+                Address derived;
+                if (!loaded.keys.contains(address) || !seen.insert(address).second ||
+                    !crypto::compute_address_from_private_key(seed, derived) || derived != address) return false;
+            }
+            if (offset != material.size()) return false;
+            result.authenticated = true;
         }
-        const auto scanned_height = document.at("scanned_height").get<Height>();
+        const auto scanned_height = integer<Height>(document.at("scanned_height"));
         const auto scanned_hash = hash(document.at("scanned_hash"));
+        auto selected_path = absolute_wallet_path(filename);
         keys_.swap(loaded.keys); transactions_.swap(loaded.transactions); tx_index_.swap(loaded.tx_index);
-        multisig_addresses_.swap(loaded.multisig_addresses); primary_address_ = loaded.primary_address;
-        wrapped_master_key_ = wrapped; encrypted_keys_ = encrypted;
+        multisig_addresses_.swap(loaded.multisig_addresses); std::swap(primary_address_, loaded.primary_address);
+        wrapped_master_key_.swap(wrapped); encrypted_keys_.swap(encrypted);
         if (!vault_master_key_.empty()) OPENSSL_cleanse(vault_master_key_.data(), vault_master_key_.size());
         vault_master_key_.clear();
         vault_mode_ = true; vault_keys_dirty_ = false; vault_saved_checksum_ = checksum;
@@ -356,18 +421,22 @@ bool Wallet::load_vault_locked(const std::string& filename, const std::string& p
         utils::cleanse_container(password_salt_); password_kdf_iterations_ = 0;
         last_scanned_height_ = scanned_height; last_scanned_block_hash_ = scanned_hash;
         last_scan_result_ = {};
-        file_path_ = std::filesystem::absolute(filename).lexically_normal().string();
+        file_path_.swap(selected_path);
+        loaded_format_ = WalletFileFormat::VAULT_GEOV;
+        loaded_encrypted_ = true;
+        result.error = WalletLoadError::NONE;
         vault_cv_.notify_all();
         return true;
-    } catch (...) { return false; }
+    } catch (const std::bad_alloc&) { result.error = WalletLoadError::RESOURCE_LIMIT; return false; }
+    catch (...) { return false; }
 }
 
 bool Wallet::backup(const std::string& destination) const {
     std::lock_guard<std::mutex> guard(mutex_);
     std::error_code error;
-    const bool exists = std::filesystem::exists(destination, error);
+    const bool exists = std::filesystem::exists(wallet_path(destination), error);
     if (!vault_mode_ || exists || error ||
-        std::filesystem::absolute(destination).lexically_normal() == std::filesystem::absolute(file_path_).lexically_normal()) return false;
+        absolute_wallet_path(destination) == absolute_wallet_path(file_path_)) return false;
     // Serialize the current public history and sealed key vault, including when locked.
     return save_vault_locked(destination, false);
 }

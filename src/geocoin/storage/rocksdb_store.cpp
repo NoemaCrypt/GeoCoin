@@ -94,6 +94,7 @@ RocksDBStore::~RocksDBStore() {
 }
 
 bool RocksDBStore::open(const std::string& path, const StorageOptions& options) {
+    last_open_error_.clear();
     rocksdb::Options db_options;
     db_options.create_if_missing = true;
     db_options.error_if_exists = false;
@@ -128,18 +129,21 @@ bool RocksDBStore::open(const std::string& path, const StorageOptions& options) 
 
     rocksdb::ColumnFamilyOptions cf_options(db_options);
     std::vector<std::string> cf_names;
-    rocksdb::Status status = rocksdb::DB::ListColumnFamilies(db_options, path, &cf_names);
+    rocksdb::Status status = rocksdb::DB::ListColumnFamilies(db_options,
+        utils::path_to_utf8(utils::path_from_utf8(path)), &cf_names);
     const auto required_cfs = required_column_families();
     std::set<std::string> expected(required_cfs.begin(), required_cfs.end());
     expected.insert(rocksdb::kDefaultColumnFamilyName);
     if (status.ok()) {
         if (std::set<std::string>(cf_names.begin(), cf_names.end()) != expected) {
+            last_open_error_ = "RocksDB path '" + path + "': unsupported column family layout";
             GEO_LOG_ERROR("storage", "Unsupported column family layout; use a fresh data directory");
             return false;
         }
     } else {
         std::error_code error;
-        if (std::filesystem::exists(std::filesystem::path(path) / "CURRENT", error) || error) {
+        if (std::filesystem::exists(utils::path_from_utf8(path) / "CURRENT", error) || error) {
+            last_open_error_ = "RocksDB path '" + path + "': " + status.ToString();
             GEO_LOG_ERROR("storage", "Cannot read existing database layout: " << status.ToString());
             return false;
         }
@@ -161,6 +165,7 @@ bool RocksDBStore::open(const std::string& path, const StorageOptions& options) 
         db_
     );
     if (!status.ok()) {
+        last_open_error_ = "RocksDB path '" + path + "': " + status.ToString();
         GEO_LOG_ERROR("storage", "Failed to open RocksDB block storage: " << status.ToString());
         return false;
     }
@@ -169,7 +174,9 @@ bool RocksDBStore::open(const std::string& path, const StorageOptions& options) 
         cf_handles_[cf_names[i]] = raw_handles[i];
     }
 
-    if (!backend::ensure_format(db_.get(), options, raw_handles)) {
+    std::string format_error;
+    if (!backend::ensure_format(db_.get(), options, raw_handles, &format_error)) {
+        last_open_error_ = "RocksDB path '" + path + "': " + format_error;
         close();
         return false;
     }

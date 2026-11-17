@@ -1,14 +1,16 @@
 #include "geocoin/utils/config.hpp"
+#include "geocoin/utils/filesystem.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <filesystem>
 
 namespace geocoin::utils {
 
 std::map<std::string, std::vector<std::string>> read_config_file(const std::string& config_path) {
     std::map<std::string, std::vector<std::string>> config;
 
-    std::ifstream file(config_path);
+    std::ifstream file(path_from_utf8(config_path));
     if (!file.good()) {
         // Файл не найден - это нормально
         return config;

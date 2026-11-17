@@ -41,12 +41,27 @@ MiningPage::MiningPage(QWidget *parent) :
 
 MiningPage::~MiningPage()
 {
+    if (gpuCleanupErrorDialog) {
+        disconnect(gpuCleanupErrorDialog, nullptr, this, nullptr);
+        delete gpuCleanupErrorDialog.data();
+    }
     waitForPendingMiningStop();
     if (gpuDeviceProbe) {
         QObject::disconnect(gpuDeviceProbe, nullptr, this, nullptr);
         stopProcessQuietly(gpuDeviceProbe, 500, 1500);
     }
-    stopGpuMining();
+    if (gpuStopPollTimer) gpuStopPollTimer->stop();
+    // Normal shutdown drains first; final teardown must not schedule retries or UI.
+    if (gpuMinerProcess && gpuMinerProcess->state() != QProcess::NotRunning) {
+        QObject::disconnect(gpuMinerProcess, nullptr, this, nullptr);
+        gpuMinerProcess->write("stop\n");
+        if (!gpuMinerProcess->waitForFinished(3000)) {
+            gpuMinerProcess->kill();
+            gpuMinerProcess->waitForFinished(1500);
+        }
+    }
+    gpuRpcStopAction.wait();
+    stopPrivateGpuRpc();
 }
 
 void MiningPage::waitForPendingMiningStop()
@@ -286,6 +301,9 @@ void MiningPage::setupUi()
     connect(gpuDeviceProbe, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &MiningPage::gpuProbeFinished);
     createGpuMinerProcess();
+    gpuStopPollTimer = new QTimer(this);
+    gpuStopPollTimer->setInterval(50);
+    connect(gpuStopPollTimer, &QTimer::timeout, this, &MiningPage::pollGpuStop);
     applyTheme();
     setGpuMiningUi(false);
     probeGpuDevices();
@@ -563,6 +581,10 @@ void MiningPage::pollMiningStop()
     }
     miningStopPollTimer->stop();
     miningActionInProgress = false;
+    if (miningStopAction.failed() && clientModel) {
+        emit clientModel->message(tr("CPU Mining"),
+            tr("CPU mining shutdown failed [cpu_stop_failed]. Mining ownership is retained; retry Stop before closing or switching wallets."), 2);
+    }
 
     if (clientModel) {
         updateMiningInfo(

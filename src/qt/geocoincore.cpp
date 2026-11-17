@@ -10,6 +10,7 @@
 #include "geocoin/network/network_utils.hpp"
 #include "geocoin/wallet/wallet.hpp"
 #include "geocoin/utils/secure_memory.hpp"
+#include "geocoin/utils/filesystem.hpp"
 
 #include <QFile>
 #include <QFileInfo>
@@ -52,19 +53,21 @@ void close_socket_portable(int sock) {
 #endif
 
 QString describeNodeStartupContext(const QString& dataDirectory,
+                                   const QString& network,
+                                   quint16 p2pPort,
                                    const QStringList& addNodes,
                                    const QStringList& connectPeers,
                                    bool noAutoConnect,
                                    const QString& reason)
 {
-    const QString networkDir = QDir(dataDirectory).filePath(QStringLiteral("degree"));
+    const QString networkDir = QDir(dataDirectory).filePath(network);
     return QStringLiteral(
         "%1\n\n"
         "Context:\n"
-        "- network: degree\n"
+        "- network: %7\n"
         "- base datadir: %2\n"
         "- network datadir: %3\n"
-        "- p2p port: 3030 (or outbound-only if already busy)\n"
+        "- p2p port: %8\n"
         "- rpc port: disabled in Qt full-node mode\n"
         "- addnode count: %4\n"
         "- connect count: %5\n"
@@ -74,7 +77,8 @@ QString describeNodeStartupContext(const QString& dataDirectory,
           networkDir,
           QString::number(addNodes.size()),
           QString::number(connectPeers.size()),
-          noAutoConnect ? QStringLiteral("off") : QStringLiteral("on"));
+          noAutoConnect ? QStringLiteral("off") : QStringLiteral("on"))
+        .arg(network, p2pPort == 0 ? QStringLiteral("network default") : QString::number(p2pPort));
 }
 
 }
@@ -135,6 +139,7 @@ GeoCoinCore::GeoCoinCore(QObject *parent)
 
 GeoCoinCore::~GeoCoinCore()
 {
+    shutdown();
 }
 
 geocoin::node::NodeComponentHandle GeoCoinCore::getNodeComponents()
@@ -167,20 +172,24 @@ void GeoCoinCore::setMiningSha256Backend(const QString& backend)
     miningSha256Backend = backend;
 }
 
-void GeoCoinCore::setWalletPassword(const QString& password)
+void GeoCoinCore::setRuntimeOptions(const QString& network, quint16 p2pPort, const QString& activationManifest)
 {
-    walletPassword = password;
+    network_ = network;
+    p2pPort_ = p2pPort;
+    activationManifestPath_ = activationManifest;
 }
+
 
 void GeoCoinCore::initialize()
 {
     try {
         // Initialize node
         geocoin::node::NodeConfig config;
-        config.p2p_port = 0;
+        config.p2p_port = p2pPort_;
         config.rpc_port = 0;
         config.data_dir = dataDirectory.toStdString();
-        config.network = "degree";
+        config.network = network_.toStdString();
+        config.activation_manifest_path = activationManifestPath_.toStdString();
         config.enable_mining = false;
         config.mining_threads = 1;
         // Qt is an interactive full-node wallet. Keep mining fully multi-core,
@@ -214,9 +223,10 @@ void GeoCoinCore::initialize()
         }
 
         node = std::make_shared<geocoin::node::Node>(config);
+        nodeDataDirectory_ = QString::fromStdString(node->get_config().data_dir);
 
         geocoin::bytes node_private_key = geocoin::node::load_or_create_node_key(
-            std::filesystem::path(dataDirectory.toStdString())
+            geocoin::utils::path_from_utf8(dataDirectory.toStdString())
         );
         geocoin::utils::ScopedContainerCleanser<geocoin::bytes> nodeKeyCleanser(node_private_key);
 
@@ -235,6 +245,8 @@ void GeoCoinCore::initialize()
             }
             const QString startupError = describeNodeStartupContext(
                 dataDirectory,
+                network_,
+                p2pPort_,
                 addNodes,
                 connectPeers,
                 noAutoConnect,
@@ -245,57 +257,6 @@ void GeoCoinCore::initialize()
             return;
         }
 
-        // Load the wallet from the selected data directory.  Wallet creation is
-        // an explicit GUI action so first run can ask the user for a passphrase.
-        const QString walletPath = QDir(dataDirectory).filePath(QStringLiteral("wallet.dat"));
-        QFile walletFile(walletPath);
-
-        std::string walletPasswordBytes = walletPassword.toStdString();
-        geocoin::utils::ScopedContainerCleanser<std::string> walletPasswordCleanser(walletPasswordBytes);
-        GUIUtil::cleanseQString(walletPassword);
-
-        if (!walletFile.exists() && !QFileInfo::exists(walletPath + QStringLiteral(".bak"))) {
-            wallet = std::make_shared<geocoin::wallet::Wallet>();
-        } else {
-            try {
-                wallet = std::make_shared<geocoin::wallet::Wallet>();
-
-                const bool load_result = wallet->load_from_file(
-                    walletPath.toStdString(), walletPasswordBytes);
-                geocoin::utils::cleanse_container(walletPasswordBytes);
-
-                if (!load_result) {
-                    emit initializeResult(false, tr("Failed to load wallet. The password is incorrect or wallet.dat is damaged."));
-                    return;
-                }
-            } catch (const std::exception& e) {
-                emit initializeResult(false, QString("Exception: ") + e.what());
-                return;
-            } catch (...) {
-                emit initializeResult(false, "Unknown exception while loading wallet");
-                return;
-            }
-        }
-
-        // Сканируем блокчейн на транзакции кошелька в фоновом потоке.
-        // Это делается ПОСЛЕ старта ноды и ДО сигнала об успешной инициализации.
-        auto chain_state = node->get_chain_state();
-
-        const geocoin::Height current_height = chain_state->get_height();
-        const geocoin::Height wallet_best_height = wallet->get_last_scanned_height();
-        const geocoin::Hash256 wallet_anchor = wallet->get_last_scanned_block_hash();
-        geocoin::Hash256 active_anchor{};
-        const bool anchor_matches = wallet_best_height <= current_height &&
-            chain_state->get_active_block_hash(wallet_best_height, active_anchor) &&
-            active_anchor == wallet_anchor;
-
-        if (!anchor_matches) {
-            // This also covers legacy wallets that only stored a height and
-            // same-height reorgs that happened while the application was off.
-            wallet->reconcile_blockchain(chain_state, 0);
-        } else if (wallet_best_height < current_height) {
-            wallet->scan_blockchain(chain_state, wallet_best_height + 1);
-        }
 
         emit initializeResult(true, QString());
 
@@ -306,19 +267,25 @@ void GeoCoinCore::initialize()
 
 void GeoCoinCore::shutdown()
 {
+    if (shutdownComplete_) return;
     try {
         if (node) {
+            const int injectedFailures = property("geocoinTestStopFailures").toInt();
+            if (injectedFailures > 0) {
+                setProperty("geocoinTestStopFailures", injectedFailures - 1);
+                throw std::runtime_error("synthetic core stop failure");
+            }
             node->stop();
             node.reset();
         }
 
-        wallet.reset();
-
+        shutdownComplete_ = true;
         emit shutdownResult();
     } catch (const std::exception& e) {
-        // Log error but don't crash
-        emit shutdownResult();  // Still signal completion
+        // Retain the node and its DB ownership until a retry completes stop().
+        emit shutdownFailed(QStringLiteral("Node shutdown failed [node_stop_failed]: %1")
+            .arg(QString::fromUtf8(e.what())));
     } catch (...) {
-        emit shutdownResult();  // Still signal completion
+        emit shutdownFailed(QStringLiteral("Node shutdown failed [node_stop_failed]: unknown exception"));
     }
 }

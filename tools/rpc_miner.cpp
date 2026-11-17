@@ -1,5 +1,6 @@
 #include "geocoin/crypto/geo_area.hpp"
 #include "geocoin/types.hpp"
+#include "geocoin/node/cpu_workers.hpp"
 #include "geocoin/utils/bytes.hpp"
 #include "geocoin/utils/secret_file.hpp"
 #define IOKE_SHA256_NO_OPENSSL_COMPAT_NAMES
@@ -23,6 +24,11 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <poll.h>
+#include <unistd.h>
+#endif
+
 using json = nlohmann::json;
 
 namespace {
@@ -36,14 +42,23 @@ struct Options {
     std::string rpc_pass_file;
     std::string address;
     int blocks = 1;
-    int threads = 0;
+    size_t threads = 0;
     int timeout_sec = 1800;
     std::optional<uint32_t> timestamp;
     uint32_t timestamp_step = 0;
+    bool benchmark = false;
+    bool control_stdin = false;
 };
 
 struct MiningResult {
     bool found = false;
+    bool timed_out = false;
+    bool cancelled = false;
+    size_t requested_threads = 0;
+    size_t spawned_threads = 0;
+    size_t allowed_threads = 0;
+    std::vector<geocoin::node::CpuLogicalProcessor> worker_bindings;
+    std::vector<uint64_t> worker_hashes;
     uint64_t nonce = 0;
     geocoin::Hash256 hash{};
     uint64_t hashes = 0;
@@ -57,10 +72,12 @@ void print_usage(const char* argv0) {
         << "Options:\n"
         << "  --address <address>   Mining reward address for getblocktemplate\n"
         << "  --blocks <n>          Number of blocks to mine (default: 1)\n"
-        << "  --threads <n>         Mining threads (default: hardware concurrency)\n"
+        << "  --threads <n>         Mining threads (0/default: OS-allowed CPU capacity)\n"
         << "  --timeout <seconds>   Per-block timeout (default: 1800)\n"
         << "  --timestamp <unix>    Timestamp for the first block template\n"
         << "  --timestamp-step <s>  Increment timestamp after each accepted block\n";
+    std::cout << "  --benchmark          Offline synthetic-header CPU benchmark (no RPC)\n"
+              << "  --control-stdin      Stop benchmark on stdin 'stop' line or EOF\n";
 }
 
 std::string read_first_line(const std::string& path) {
@@ -81,6 +98,10 @@ Options parse_options(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             std::exit(0);
+        } else if (arg == "--benchmark") {
+            opts.benchmark = true;
+        } else if (arg == "--control-stdin") {
+            opts.control_stdin = true;
         } else if (arg == "--url") {
             opts.url = need_value("--url");
         } else if (arg == "--rpc-user") {
@@ -94,7 +115,15 @@ Options parse_options(int argc, char** argv) {
         } else if (arg == "--blocks") {
             opts.blocks = std::stoi(need_value("--blocks"));
         } else if (arg == "--threads") {
-            opts.threads = std::stoi(need_value("--threads"));
+            const std::string value = need_value("--threads");
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos) {
+                throw std::runtime_error("--threads must be a nonnegative integer");
+            }
+            const auto count = std::stoull(value);
+            if (count > (std::numeric_limits<size_t>::max)()) {
+                throw std::runtime_error("--threads exceeds size_t range");
+            }
+            opts.threads = static_cast<size_t>(count);
         } else if (arg == "--timeout") {
             opts.timeout_sec = std::stoi(need_value("--timeout"));
         } else if (arg == "--timestamp") {
@@ -114,10 +143,10 @@ Options parse_options(int argc, char** argv) {
         }
     }
 
-    if (!opts.rpc_pass_file.empty()) {
+    if (!opts.benchmark && !opts.rpc_pass_file.empty()) {
         opts.rpc_pass = read_first_line(opts.rpc_pass_file);
     }
-    if (opts.rpc_pass.empty()) {
+    if (!opts.benchmark && opts.rpc_pass.empty()) {
         throw std::runtime_error("RPC password is required");
     }
     if (opts.blocks < 1) {
@@ -129,11 +158,8 @@ Options parse_options(int argc, char** argv) {
     if (opts.timestamp_step != 0 && !opts.timestamp.has_value()) {
         throw std::runtime_error("--timestamp-step requires --timestamp");
     }
-    if (opts.threads < 1) {
-        opts.threads = static_cast<int>(std::thread::hardware_concurrency());
-        if (opts.threads < 1) {
-            opts.threads = 1;
-        }
+    if (opts.control_stdin && !opts.benchmark) {
+        throw std::runtime_error("--control-stdin requires --benchmark");
     }
     return opts;
 }
@@ -397,11 +423,11 @@ bool is_stale_submit_reject(const json& reject) {
 MiningResult mine_block_bytes(
     const geocoin::bytes& block_bytes,
     uint32_t bits,
-    int threads,
-    int timeout_sec
+    size_t threads,
+    int timeout_sec,
+    const std::atomic<bool>* keep_running = nullptr
 ) {
     static constexpr size_t kHeaderSize = 124;
-    static constexpr size_t kNonceOffset = 116;
     if (block_bytes.size() < kHeaderSize) {
         throw std::runtime_error("block template is shorter than block header");
     }
@@ -412,14 +438,24 @@ MiningResult mine_block_bytes(
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec);
 
     std::atomic<bool> found{false};
+    std::atomic<bool> running{true};
     std::atomic<uint64_t> total_hashes{0};
     MiningResult result;
+    const auto topology = geocoin::node::cpu_mining_topology();
+    result.requested_threads = threads == 0 ? topology.capacity() : threads;
+    result.allowed_threads = topology.capacity();
+    threads = (std::min)(result.requested_threads, topology.capacity());
+    result.worker_hashes.resize(threads, 0);
     std::mutex result_mutex;
     std::vector<std::thread> workers;
-    workers.reserve(static_cast<size_t>(threads));
+    struct JoinOnExit {
+        std::atomic<bool>& running;
+        std::vector<std::thread>& workers;
+        ~JoinOnExit() { running = false; geocoin::node::join_cpu_workers(workers); }
+    } join{running, workers};
 
-    for (int tid = 0; tid < threads; ++tid) {
-        workers.emplace_back([&, tid]() {
+    const auto started = geocoin::node::start_cpu_workers(workers, running, threads, topology,
+        [&](size_t tid) {
             uint64_t nonce = static_cast<uint64_t>(tid);
             uint64_t local_hashes = 0;
             const uint64_t stride = static_cast<uint64_t>(threads);
@@ -442,11 +478,14 @@ MiningResult mine_block_bytes(
                 return true;
             };
 
-            while (!found.load(std::memory_order_relaxed)) {
+            while (running.load(std::memory_order_acquire) && !found.load(std::memory_order_relaxed) &&
+                   (!keep_running || keep_running->load(std::memory_order_acquire))) {
                 if (std::chrono::steady_clock::now() >= deadline) {
                     break;
                 }
-                for (uint64_t n = 0; n < kCheckEvery; n += 2) {
+                for (uint64_t n = 0; n < kCheckEvery && running.load(std::memory_order_relaxed) &&
+                     !found.load(std::memory_order_relaxed) &&
+                     (!keep_running || keep_running->load(std::memory_order_relaxed)); n += 2) {
                     uint8_t digest_a[32];
                     uint8_t digest_b[32];
                     const uint64_t nonce_b = nonce + stride;
@@ -458,19 +497,165 @@ MiningResult mine_block_bytes(
                 }
             }
             total_hashes.fetch_add(local_hashes, std::memory_order_relaxed);
+            result.worker_hashes[tid] = local_hashes;
+        },
+        [&](size_t tid, const std::string& error) {
+            std::lock_guard lock(result_mutex);
+            if (result.error.empty()) result.error = "CPU worker " + std::to_string(tid) + " failed: " + error;
         });
+    result.spawned_threads = started.spawned;
+    if (started.ok()) result.worker_bindings.assign(topology.processors.begin(), topology.processors.begin() + started.spawned);
+    std::cerr << "CPU mining workers: requested=" << result.requested_threads
+              << ", allowed=" << result.allowed_threads << ", spawned=" << result.spawned_threads << '\n';
+    if (!result.worker_bindings.empty()) {
+        json groups = json::object();
+        for (const auto& cpu : result.worker_bindings) {
+            const auto group = std::to_string(cpu.group);
+            groups[group] = groups.value(group, size_t{0}) + 1;
+        }
+        std::cerr << "CPU mining group bindings: " << groups.dump() << '\n';
     }
-
-    for (auto& worker : workers) {
-        worker.join();
-    }
+    geocoin::node::join_cpu_workers(workers);
+    if (!started.ok()) result.error = "CPU worker startup failed: " + started.error;
 
     result.hashes = total_hashes.load(std::memory_order_relaxed);
-    if (!found.load(std::memory_order_relaxed)) {
+    if (!result.error.empty()) {
+        result.found = false;
+    } else if (keep_running && !keep_running->load(std::memory_order_acquire)) {
+        result.cancelled = true;
+    } else if (!found.load(std::memory_order_relaxed)) {
+        result.timed_out = true;
         result.error = "mining timeout after " + std::to_string(timeout_sec) +
                        "s, hashes=" + std::to_string(result.hashes);
     }
     return result;
+}
+
+// Poll/read only available input. A blocking getline thread cannot be joined
+// when an unattended benchmark reaches its deadline without receiving a line.
+bool benchmark_stdin_stop(std::string& pending, std::string& error) {
+    char buffer[128];
+    size_t count = 0;
+#ifdef _WIN32
+    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    const DWORD type = GetFileType(input);
+    if (type == FILE_TYPE_CHAR) {
+        INPUT_RECORD event{};
+        DWORD events = 0;
+        if (!PeekConsoleInputW(input, &event, 1, &events)) {
+            error = "Cannot inspect benchmark console input: " + std::to_string(GetLastError());
+            return true;
+        }
+        if (!events) return false;
+        if (!ReadConsoleInputW(input, &event, 1, &events)) {
+            error = "Cannot read benchmark console input: " + std::to_string(GetLastError());
+            return true;
+        }
+        if (event.EventType != KEY_EVENT || !event.Event.KeyEvent.bKeyDown) return false;
+        const auto ch = event.Event.KeyEvent.uChar.UnicodeChar;
+        if (ch == L'\r') buffer[count++] = '\n';
+        else if (ch > 0 && ch < 128) buffer[count++] = static_cast<char>(ch);
+    } else {
+        DWORD available = 0;
+        if (type == FILE_TYPE_PIPE) {
+            if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr)) {
+                if (GetLastError() != ERROR_BROKEN_PIPE) error = "Cannot inspect benchmark stdin: " + std::to_string(GetLastError());
+                return true;
+            }
+            if (!available) return false;
+        } else {
+            available = sizeof(buffer);
+        }
+        DWORD received = 0;
+        if (!ReadFile(input, buffer, (std::min)(available, static_cast<DWORD>(sizeof(buffer))), &received, nullptr)) {
+            if (GetLastError() != ERROR_BROKEN_PIPE) error = "Cannot read benchmark stdin: " + std::to_string(GetLastError());
+            return true;
+        }
+        if (!received) return true;
+        count = received;
+    }
+#else
+    pollfd input{STDIN_FILENO, POLLIN, 0};
+    const int ready = poll(&input, 1, 0);
+    if (ready < 0) {
+        if (errno != EINTR) error = "Cannot poll benchmark stdin: " + std::to_string(errno);
+        return !error.empty();
+    }
+    if (!ready) return false;
+    if (input.revents & (POLLERR | POLLNVAL)) {
+        error = "Benchmark stdin is unavailable";
+        return true;
+    }
+    if (!(input.revents & (POLLIN | POLLHUP))) return false;
+    const auto received = read(STDIN_FILENO, buffer, sizeof(buffer));
+    if (received < 0) {
+        if (errno != EINTR && errno != EAGAIN) error = "Cannot read benchmark stdin: " + std::to_string(errno);
+        return !error.empty();
+    }
+    if (!received) return true;
+    count = static_cast<size_t>(received);
+#endif
+    pending.append(buffer, count);
+    for (size_t newline; (newline = pending.find('\n')) != std::string::npos;) {
+        auto line = pending.substr(0, newline);
+        pending.erase(0, newline + 1);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line == "stop") return true;
+    }
+    if (pending.size() > 4096) pending.clear();
+    return false;
+}
+
+json run_cpu_benchmark(const Options& opts) {
+    geocoin::bytes header(HeaderPow::kHeaderSize, 0);
+    std::atomic<bool> keep_running{true}, done{false};
+    MiningResult result;
+    const auto started_at = std::chrono::steady_clock::now();
+    std::thread miner([&] {
+        try {
+            result = mine_block_bytes(header, 0, opts.threads, opts.timeout_sec, &keep_running);
+        } catch (const std::exception& error) {
+            result.error = error.what();
+        } catch (...) {
+            result.error = "non-standard CPU benchmark exception";
+        }
+        done.store(true, std::memory_order_release);
+    });
+    struct JoinOnExit {
+        std::atomic<bool>& running;
+        std::thread& worker;
+        ~JoinOnExit() { running = false; if (worker.joinable()) worker.join(); }
+    } join{keep_running, miner};
+    std::string pending, control_error;
+    bool stop_requested = false;
+    auto stop_at = started_at;
+    while (!done.load(std::memory_order_acquire)) {
+        if (opts.control_stdin && !stop_requested && benchmark_stdin_stop(pending, control_error)) {
+            stop_requested = true;
+            stop_at = std::chrono::steady_clock::now();
+            keep_running.store(false, std::memory_order_release);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    miner.join();
+    const auto finished_at = std::chrono::steady_clock::now();
+    if (!control_error.empty()) throw std::runtime_error(control_error);
+    if (!result.error.empty() && !result.timed_out) throw std::runtime_error(result.error);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(finished_at - started_at).count();
+    json bindings = json::array();
+    for (size_t worker = 0; worker < result.worker_bindings.size(); ++worker) {
+        const auto& cpu = result.worker_bindings[worker];
+        json binding{{"group", cpu.group}, {"logical_cpu", cpu.index}, {"hashes", result.worker_hashes[worker]}};
+        if (cpu.cpu_set_id != (std::numeric_limits<uint32_t>::max)()) binding["cpu_set_id"] = cpu.cpu_set_id;
+        bindings.push_back(std::move(binding));
+    }
+    return json{{"result", "ok"}, {"mode", "cpu-benchmark"},
+        {"requested_threads", result.requested_threads}, {"spawned_threads", result.spawned_threads},
+        {"allowed_threads", result.allowed_threads}, {"active_threads", 0},
+        {"worker_bindings", bindings}, {"hashes", result.hashes}, {"elapsed_ms", elapsed_ms},
+        {"hashrate_hs", elapsed_ms > 0 ? static_cast<double>(result.hashes) * 1000.0 / elapsed_ms : 0.0},
+        {"stop_reason", stop_requested ? "stdin" : "timeout"},
+        {"stop_latency_ms", stop_requested ? std::chrono::duration_cast<std::chrono::milliseconds>(finished_at - stop_at).count() : 0}};
 }
 
 } // namespace
@@ -478,6 +663,10 @@ MiningResult mine_block_bytes(
 int main(int argc, char** argv) {
     try {
         const Options opts = parse_options(argc, argv);
+        if (opts.benchmark) {
+            std::cout << run_cpu_benchmark(opts).dump(2) << '\n';
+            return 0;
+        }
 
         json mined = json::array();
         for (int i = 0; i < opts.blocks; ++i) {
@@ -525,7 +714,7 @@ int main(int argc, char** argv) {
                 );
                 block_hashes += mining.hashes;
                 if (!mining.found) {
-                    if (mining.error.find("timeout") != std::string::npos) {
+                    if (mining.timed_out) {
                         continue;
                     }
                     throw std::runtime_error(mining.error.empty() ? "mining failed" : mining.error);
@@ -549,6 +738,9 @@ int main(int argc, char** argv) {
                     {"hash", geocoin::utils::hash256_to_hex(mining.hash)},
                     {"hashes", block_hashes},
                     {"elapsed_ms", elapsed_ms},
+                    {"requested_threads", mining.requested_threads},
+                    {"spawned_threads", mining.spawned_threads},
+                    {"allowed_threads", mining.allowed_threads},
                 });
                 accepted = true;
             }

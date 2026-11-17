@@ -1,8 +1,8 @@
 {
   "name" : "geocoin-production",
-  "version-string" : "0.1.2",
+  "version-string" : "0.1.3",
   "builtin-baseline" : "3855d4d6b52353ee2e2f73044327e59d01a18c84",
-  "dependencies" : [ "rocksdb", "boost-geometry", {
+  "dependencies" : [ "rocksdb", "boost-geometry", "boost-beast", {
     "name" : "openssl",
     "version>=" : "3.6.2"
   } ],

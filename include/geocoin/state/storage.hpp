@@ -162,6 +162,7 @@ public:
     bool open();
     void close();
     bool is_open() const { return db_ != nullptr; }
+    const std::string& last_open_error() const { return last_open_error_; }
 
 
     bool put_transaction(const Hash256& hash, const core::Transaction& tx) override;
@@ -197,6 +198,7 @@ private:
     friend struct RocksDBStorageTestAccess;
 #endif
     std::string db_path_;
+    std::string last_open_error_;
     std::string address_db_path_;
     StorageOptions options_;
     std::unique_ptr<rocksdb::DB> db_;
@@ -241,7 +243,8 @@ public:
         Type type,
         const std::string& chaindata_path,
         const std::string& addresses_path,
-        StorageOptions options = {}
+        StorageOptions options = {},
+        std::string* error = nullptr
     );
     static std::optional<Type> parse_type(const std::string& value);
     static std::optional<StorageProfile> parse_profile(const std::string& value);

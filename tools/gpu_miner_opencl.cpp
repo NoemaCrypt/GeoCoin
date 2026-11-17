@@ -391,6 +391,29 @@ std::string cl_device_string(cl_device_id device, cl_device_info info)
     return value;
 }
 
+DeviceInfo describe_device(const OpenClDevice& d)
+{
+    DeviceInfo info;
+    info.id = d.id;
+    info.backend = Backend::OpenCl;
+    info.name = d.name;
+    info.vendor = d.vendor;
+    info.detail = "OpenCL GPU";
+    info.available = true;
+    const std::string extensions = " " + cl_device_string(d.device, CL_DEVICE_EXTENSIONS) + " ";
+    if (extensions.find(" cl_khr_device_uuid ") != std::string::npos) {
+        unsigned char uuid[16]{};
+        if (clGetDeviceInfo(d.device, 0x106A /* CL_DEVICE_UUID_KHR */, sizeof(uuid), uuid, nullptr) == CL_SUCCESS)
+            info.uuid = uuid_identity(uuid);
+    }
+    if (extensions.find(" cl_khr_pci_bus_info ") != std::string::npos) {
+        struct { cl_uint domain, bus, device, function; } pci{};
+        if (clGetDeviceInfo(d.device, 0x410F /* CL_DEVICE_PCI_BUS_INFO_KHR */, sizeof(pci), &pci, nullptr) == CL_SUCCESS)
+            info.pci_bus_id = pci_identity(pci.domain, pci.bus, pci.device, pci.function);
+    }
+    return info;
+}
+
 std::vector<OpenClDevice> enumerate_opencl_devices()
 {
     if (!ensure_opencl_available()) {
@@ -645,14 +668,7 @@ std::vector<DeviceInfo> list_opencl_devices()
 {
     std::vector<DeviceInfo> out;
     for (const auto& d : enumerate_opencl_devices()) {
-        DeviceInfo info;
-        info.id = d.id;
-        info.backend = Backend::OpenCl;
-        info.name = d.name;
-        info.vendor = d.vendor;
-        info.detail = "OpenCL GPU";
-        info.available = true;
-        out.push_back(std::move(info));
+        out.push_back(describe_device(d));
     }
     return out;
 }
@@ -661,6 +677,7 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
 {
     MiningResult final_result;
     final_result.backend = "opencl";
+    if (job_cancelled(job)) { final_result.cancelled = true; return final_result; }
     std::string loader_error;
     if (!ensure_opencl_available(&loader_error)) {
         final_result.error = loader_error;
@@ -673,6 +690,15 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
     }
 
     auto all_devices = enumerate_opencl_devices();
+    std::vector<int> seen;
+    for (int id : device_ids) {
+        if (std::find(seen.begin(), seen.end(), id) != seen.end() ||
+            std::none_of(all_devices.begin(), all_devices.end(), [id](const OpenClDevice& d) { return d.id == id; })) {
+            final_result.error = "invalid or duplicate OpenCL device id: " + std::to_string(id);
+            return final_result;
+        }
+        seen.push_back(id);
+    }
     if (!device_ids.empty()) {
         all_devices.erase(std::remove_if(all_devices.begin(), all_devices.end(), [&](const OpenClDevice& d) {
             return std::find(device_ids.begin(), device_ids.end(), d.id) == device_ids.end();
@@ -683,21 +709,10 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
         return final_result;
     }
     for (const auto& device : all_devices) {
-        final_result.devices.push_back({
-            device.id,
-            Backend::OpenCl,
-            device.name,
-            device.vendor,
-            "OpenCL GPU",
-            true,
-        });
+        final_result.devices.push_back(describe_device(device));
     }
     final_result.device_hashes.assign(final_result.devices.size(), 0);
 
-    const uint64_t requested_per_launch = std::max<uint64_t>(1024, job.intensity);
-    const uint64_t per_launch = job.max_launch_attempts > 0
-        ? std::max<uint64_t>(1024, std::min<uint64_t>(requested_per_launch, job.max_launch_attempts))
-        : requested_per_launch;
     const uint64_t nonce_stride = static_cast<uint64_t>(all_devices.size());
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(job.timeout_sec);
     const auto work = make_opencl_work(job.block_bytes, job.bits);
@@ -717,6 +732,7 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
             const auto device = all_devices[lane];
             uint64_t lane_hashes = 0;
             try {
+                if (job_cancelled(job)) return;
                 cl_int rc = CL_SUCCESS;
                 cl_context context = clCreateContext(nullptr, 1, &device.device, nullptr, nullptr, &rc);
                 check_cl(rc, "clCreateContext");
@@ -750,17 +766,19 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
                 check_cl(rc, "clCreateBuffer(hash)");
 
                 const size_t local = 256;
-                const size_t global = static_cast<size_t>(((per_launch + local - 1) / local) * local);
-                uint64_t chunk = 0;
+                LaunchSizer sizing(job);
+                NonceCursor nonces(job.start_nonce, lane, nonce_stride);
                 cl_int zero = 0;
                 cl_ulong zero_nonce = 0;
                 check_cl(clEnqueueWriteBuffer(queue, d_found, CL_TRUE, 0, sizeof(zero), &zero, 0, nullptr, nullptr), "clEnqueueWriteBuffer(found)");
                 check_cl(clEnqueueWriteBuffer(queue, d_nonce, CL_TRUE, 0, sizeof(zero_nonce), &zero_nonce, 0, nullptr, nullptr), "clEnqueueWriteBuffer(nonce)");
 
                 while (!found.load(std::memory_order_relaxed) &&
+                       !job_cancelled(job) &&
                        std::chrono::steady_clock::now() < deadline) {
-                    const cl_ulong base_nonce = static_cast<cl_ulong>(job.start_nonce + static_cast<uint64_t>(lane) +
-                        chunk++ * per_launch * nonce_stride);
+                    const uint64_t per_launch = sizing.attempts();
+                    const size_t global = static_cast<size_t>(((per_launch + local - 1) / local) * local);
+                    const cl_ulong base_nonce = static_cast<cl_ulong>(nonces.take(per_launch));
                     const cl_ulong stride = static_cast<cl_ulong>(nonce_stride);
                     const cl_ulong attempts = static_cast<cl_ulong>(per_launch);
 
@@ -771,15 +789,17 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
                     check_cl(clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_found), "clSetKernelArg(found)");
                     check_cl(clSetKernelArg(kernel, 5, sizeof(cl_mem), &d_nonce), "clSetKernelArg(nonce)");
                     check_cl(clSetKernelArg(kernel, 6, sizeof(cl_mem), &d_hash), "clSetKernelArg(hash)");
+                    const auto launch_start = std::chrono::steady_clock::now();
                     check_cl(clEnqueueNDRangeKernel(queue, kernel, 1, nullptr, &global, &local, 0, nullptr, nullptr), "clEnqueueNDRangeKernel");
                     check_cl(clFinish(queue), "clFinish");
+                    sizing.completed(per_launch, std::chrono::steady_clock::now() - launch_start);
                     lane_hashes += per_launch;
                     const uint64_t total_after =
                         total_hashes.fetch_add(per_launch, std::memory_order_relaxed) + per_launch;
 
                     if (job.progress_callback) {
-                        const auto now = std::chrono::steady_clock::now();
                         std::lock_guard<std::mutex> progress_lock(progress_mutex);
+                        const auto now = std::chrono::steady_clock::now();
                         if (lane < live_device_hashes.size()) {
                             live_device_hashes[lane] = lane_hashes;
                         }
@@ -816,11 +836,9 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
                 clReleaseCommandQueue(queue);
                 clReleaseContext(context);
             } catch (const std::exception& e) {
-                bool expected = false;
-                if (found.compare_exchange_strong(expected, true)) {
-                    std::lock_guard<std::mutex> lock(result_mutex);
-                    final_result.error = e.what();
-                }
+                found.store(true, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(result_mutex);
+                final_result.error = e.what();
             }
             if (lane < final_result.device_hashes.size()) {
                 final_result.device_hashes[lane] = lane_hashes;
@@ -833,7 +851,9 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
     }
 
     final_result.hashes = total_hashes.load(std::memory_order_relaxed);
-    if (!final_result.found && final_result.error.empty()) {
+    final_result.cancelled = job_cancelled(job);
+    if (!final_result.found && !final_result.cancelled && final_result.error.empty()) {
+        final_result.timed_out = true;
         final_result.error = "OpenCL mining timeout after " + std::to_string(job.timeout_sec) +
             "s, hashes=" + std::to_string(final_result.hashes);
     }
