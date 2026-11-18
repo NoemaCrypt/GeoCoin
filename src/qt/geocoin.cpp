@@ -18,6 +18,9 @@
 #include <QLineEdit>
 #include <QFileDialog>
 #include <QLockFile>
+#ifdef GEOCOIN_NATIVE_MACOS
+#include "GeoCoinNativeFrontend.h"
+#endif
 #include <QDir>
 #include <QTemporaryDir>
 #include <QFile>
@@ -300,6 +303,30 @@ int main(int argc, char *argv[])
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 #endif
 
+#ifdef GEOCOIN_NATIVE_MACOS
+    // Finder does not provide a terminal; CLI help exits before window setup.
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg(argv[i]);
+        if (arg == "--help" || arg == "-help" || arg == "-h") {
+            std::printf(
+                "Usage: geocoin-core [options]\n"
+                "  -addnode <ip:port>|-addnode=<ip:port>       add a node to connect to\n"
+                "  -connect <ip:port>|-connect=<ip:port>       connect to specified peers only\n"
+                "  -no-auto-connect                            disable automatic peer bootstrap\n"
+                "  -wallet <path>|--wallet=<path>              open a specific wallet\n"
+                "  --data-dir <path>|--data-dir=<path>         data directory\n"
+                "  --network <degree|degree-test|degree-load>  network (default degree)\n"
+                "  --p2p-port <port>                           P2P port\n"
+                "  --activation-manifest <path>                activation manifest\n"
+                "  --mining-sha256 <auto|native|legacy|openssl> SHA256 miner backend (auto->native on Apple Silicon)\n"
+                "  --smoke-test|--gui-e2e-test|--ui-layout-test  headless GUI test modes\n"
+                "  -platform offscreen                         Qt platform plugin (tests)\n");
+            std::fflush(stdout);
+            return 0;
+        }
+    }
+#endif
+
     const bool earlySmokeTest = argvHasSmokeTest(argc, argv);
     writeEarlySmokeTrace(earlySmokeTest, "before QApplication");
 
@@ -317,17 +344,21 @@ int main(int argc, char *argv[])
         QStandardPaths::setTestModeEnabled(true);
     }
 
+#ifndef GEOCOIN_NATIVE_MACOS
 #ifndef _WIN32
     // Linux fallback keeps bundled dialogs independent from the host OS theme.
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+#endif
 #endif
 
     // Создаем приложение и запускаем основной GUI-цикл.
     GeoCoinApplication app(argc, argv);
     writeEarlySmokeTrace(earlySmokeTest, "after QApplication");
     g_app = &app;
+#ifndef GEOCOIN_NATIVE_MACOS
 #ifndef _WIN32
     app.installEventFilter(new LightFileDialogThemeFilter(&app));
+#endif
 #endif
     bool smokeTest = false;
     bool guiE2eTest = false;
@@ -481,7 +512,11 @@ int main(int argc, char *argv[])
         dataDir = explicitDataDir;
     } else {
         // Pick data directory (shows dialog on first run)
+#ifdef GEOCOIN_NATIVE_MACOS
+        dataDir = geoCoinPickNativeDataDirectory();
+#else
         dataDir = Intro::pickDataDirectory();
+#endif
     }
     if (dataDir.isEmpty()) {
         return 0;

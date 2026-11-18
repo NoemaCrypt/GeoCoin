@@ -9,6 +9,10 @@
 #include "gpu_miner_rpc.hpp"
 #include "gpu_miner_control.hpp"
 
+#ifdef GEOCOIN_MACOS_ARM64
+#include "gpu_miner_apple_work.hpp"
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -53,11 +57,19 @@ void print_usage(const char* argv0)
 {
     std::cout
         << "Usage: " << argv0 << " --url <rpc-url> --rpc-user <user> (--rpc-pass <pass>|--rpc-pass-file <path>) [options]\n"
+#ifdef GEOCOIN_MACOS_ARM64
+        << "       " << argv0 << " --benchmark [--backend auto|metal|opencl] [--devices ids] [--timeout seconds]\n"
+#else
         << "       " << argv0 << " --benchmark [--backend auto|cuda|hip|opencl] [--devices ids] [--timeout seconds]\n"
+#endif
         << "Use RPC credentials configured with geocoin-node --rpc-miner-user/--rpc-miner-pass-file.\n"
         << "Options:\n"
         << "  --address <address>       Mining reward address for getblocktemplate\n"
+#ifdef GEOCOIN_MACOS_ARM64
+        << "  --backend auto|metal|opencl GPU backend (default: auto)\n"
+#else
         << "  --backend auto|cuda|hip|opencl GPU backend (default: auto)\n"
+#endif
         << "  --devices <ids>           Comma-separated backend-local GPU ids\n"
         << "  --intensity <n>           Kernel attempts per launch per GPU (default: 1073741824)\n"
         << "  --max-launch-attempts <n> Cap attempts per single GPU launch; 0 keeps intensity as-is\n"
@@ -67,7 +79,11 @@ void print_usage(const char* argv0)
         << "  --continuous              Mine until stopped; retry transient RPC failures\n"
         << "  --control-stdin           Stop on stdin stop/cancel line or EOF\n"
         << "  --stats-json              Print JSONL stats/events for GUI integration\n"
+#ifdef GEOCOIN_MACOS_ARM64
+        << "  --list-devices            List Metal/OpenCL devices and exit\n";
+#else
         << "  --list-devices            List CUDA/HIP/OpenCL devices and exit\n";
+#endif
 }
 
 std::string read_first_line(const std::string& path)
@@ -199,24 +215,38 @@ geocoin::bytes parse_hex_bytes_or_throw(const std::string& hex, const std::strin
 gm::Backend resolve_backend(gm::Backend requested)
 {
     if (requested == gm::Backend::Auto) {
+#ifdef GEOCOIN_MACOS_ARM64
+        if (!gm::list_metal_devices().empty()) {
+            return gm::Backend::Metal;
+        }
+#else
         if (!gm::list_cuda_devices().empty()) {
             return gm::Backend::Cuda;
         }
         if (!gm::list_hip_devices().empty()) {
             return gm::Backend::Hip;
         }
+#endif
         if (!gm::list_opencl_devices().empty()) {
             return gm::Backend::OpenCl;
         }
+#ifdef GEOCOIN_MACOS_ARM64
+        throw gm::FailureError(gm::Failure::Device, "no Metal or OpenCL GPU devices available");
+#else
         throw gm::FailureError(gm::Failure::Device, "no CUDA, HIP, or OpenCL GPU devices available");
+#endif
     }
     return requested;
 }
 
 void validate_devices(gm::Backend backend, const std::vector<int>& selected)
 {
+#ifdef GEOCOIN_MACOS_ARM64
+    const auto devices = backend == gm::Backend::Metal ? gm::list_metal_devices() : gm::list_opencl_devices();
+#else
     const auto devices = backend == gm::Backend::Cuda ? gm::list_cuda_devices()
         : backend == gm::Backend::Hip ? gm::list_hip_devices() : gm::list_opencl_devices();
+#endif
     if (devices.empty()) throw gm::FailureError(gm::Failure::Device, "no devices available for selected GPU backend");
     std::vector<int> seen;
     for (int id : selected) {
@@ -229,9 +259,13 @@ void validate_devices(gm::Backend backend, const std::vector<int>& selected)
 
 std::vector<gm::DeviceInfo> list_all_devices()
 {
+#ifdef GEOCOIN_MACOS_ARM64
+    std::vector<gm::DeviceInfo> out = gm::list_metal_devices();
+#else
     std::vector<gm::DeviceInfo> out = gm::list_cuda_devices();
     auto hip = gm::list_hip_devices();
     out.insert(out.end(), hip.begin(), hip.end());
+#endif
     auto opencl = gm::list_opencl_devices();
     out.insert(out.end(), opencl.begin(), opencl.end());
     return out;
@@ -258,7 +292,11 @@ void print_devices(bool json_output)
     }
 
     if (devices.empty()) {
+#ifdef GEOCOIN_MACOS_ARM64
+        std::cout << "No Metal/OpenCL GPU devices found.\n";
+#else
         std::cout << "No CUDA/HIP/OpenCL GPU devices found.\n";
+#endif
         return;
     }
     for (const auto& d : devices) {
@@ -269,12 +307,18 @@ void print_devices(bool json_output)
 
 gm::MiningResult mine_with_backend(const gm::MiningJob& job, gm::Backend backend, const std::vector<int>& devices)
 {
+#ifdef GEOCOIN_MACOS_ARM64
+    if (backend == gm::Backend::Metal) {
+        return gm::mine_metal(job, devices);
+    }
+#else
     if (backend == gm::Backend::Cuda) {
         return gm::mine_cuda(job, devices);
     }
     if (backend == gm::Backend::Hip) {
         return gm::mine_hip(job, devices);
     }
+#endif
     if (backend == gm::Backend::OpenCl) {
         return gm::mine_opencl(job, devices);
     }
@@ -311,6 +355,10 @@ const char* backend_name(Backend backend)
         return "hip";
     case Backend::OpenCl:
         return "opencl";
+#ifdef GEOCOIN_MACOS_ARM64
+    case Backend::Metal:
+        return "metal";
+#endif
     case Backend::Auto:
     default:
         return "auto";
@@ -320,8 +368,12 @@ const char* backend_name(Backend backend)
 Backend parse_backend(const std::string& value)
 {
     if (value == "auto") return Backend::Auto;
+#ifdef GEOCOIN_MACOS_ARM64
+    if (value == "metal") return Backend::Metal;
+#else
     if (value == "cuda") return Backend::Cuda;
     if (value == "hip") return Backend::Hip;
+#endif
     if (value == "opencl") return Backend::OpenCl;
     throw std::runtime_error("unsupported backend: " + value);
 }
@@ -455,6 +507,16 @@ int run_session(const Options& opts, gm::Backend backend, gm::StdinControl& cont
                 throw gm::FailureError(gm::Failure::Device, "GPU mining failed");
             }
             geocoin::utils::write_u64_le(job.block_bytes, 116, mining.nonce);
+#ifdef GEOCOIN_MACOS_ARM64
+            if (backend == gm::Backend::Metal || backend == gm::Backend::OpenCl) {
+                const auto cpu_hash = geocoin::crypto::double_sha256(job.block_bytes.data(), 124);
+                geocoin::Hash256 target{};
+                gm::apple::target_to_be32(gm::apple::bits_to_target(job.bits), target.data());
+                if (mining.hash != cpu_hash || cpu_hash > target) {
+                    throw gm::FailureError(gm::Failure::Device, "GPU solution failed CPU proof-of-work verification");
+                }
+            }
+#endif
             emit_json(opts.stats_json, {{"event", "block_found"}, {"backend", mining.backend},
                 {"device", mining.device_id}, {"nonce", mining.nonce},
                 {"hash", geocoin::utils::hash256_to_hex(mining.hash)}, {"hashrate", stats.snapshot()["hashrate"]}});

@@ -1,0 +1,11 @@
+GeoCoin Admin для macOS / GeoCoin Admin for macOS
+
+Apple Silicon, macOS 14.0+.
+
+Распакуйте весь архив и запустите ./geocoin-node --data-dir ./data --network degree.
+Параметры RPC и инструменты базы данных доступны через ./geocoin-node --help,
+./geocoin-rpc-miner --help и ./geocoin-db --help.
+
+Unpack the whole archive and run ./geocoin-node --data-dir ./data --network degree.
+See ./geocoin-node --help, ./geocoin-rpc-miner --help and ./geocoin-db --help
+for RPC settings and database tools.

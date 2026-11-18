@@ -5,6 +5,9 @@
 #include "geocoin/rpc/rpc_server.hpp"
 #include "geocoin/rpc/rpc_security.hpp"
 #include "geocoin/consensus/consensus.hpp"
+#if defined(GEOCOIN_MACOS_ARM64)
+#include "geocoin/consensus/optimized_miner.hpp"
+#endif
 #include "geocoin/consensus/chainparams.hpp"
 #include "geocoin/utils/logger.hpp"
 #include "geocoin/utils/rpc_bind_policy.hpp"
@@ -267,6 +270,9 @@ void print_usage(const char* argv0) {
         << "  --mining-sha256 <mode> Mining SHA256 backend: auto|native|legacy|openssl (default: auto)\n"
         << "  --debug                Enable verbose DEBUG logging\n"
         << "  --archive              Disable witness pruning (store full history)\n"
+#if defined(GEOCOIN_MACOS_ARM64)
+        << "  --smoke-test           Headless smoke: resolve mining-sha256 backend and exit\n"
+#endif
         << "  --no-auto-connect      Disable seed auto-connect\n"
         << "  --help                 Show this help\n";
 }
@@ -284,6 +290,9 @@ int main(int argc, char** argv) {
         geocoin::node::NodeConfig config;
         int status_interval_sec = 30;
         bool debug_mode = false;
+#if defined(GEOCOIN_MACOS_ARM64)
+        bool smoke_test = false;
+#endif
         bool enable_rpc = false;
         bool benchmark_mode = false;
         std::string benchmark_suite = "all";
@@ -562,12 +571,32 @@ int main(int argc, char** argv) {
                 config.archive = true;
                 continue;
             }
+#if defined(GEOCOIN_MACOS_ARM64)
+            if (arg == "--smoke-test") {
+                smoke_test = true;
+                continue;
+            }
+#endif
 
             std::cerr << "Unknown or incomplete argument: " << arg << "\n";
             print_usage(argv[0]);
             return 1;
         }
 
+#if defined(GEOCOIN_MACOS_ARM64)
+        if (smoke_test) {
+            // Headless smoke: exercise the SHA256 backend selection only —
+            // auto → benchmark pick → arm64_sha2 kernel on FEAT_SHA256 CPUs.
+            if (!geocoin::consensus::set_mining_sha256_backend(config.mining_sha256_backend)) {
+                std::cerr << "Unknown mining SHA256 backend '" << config.mining_sha256_backend << "'\n";
+                return 1;
+            }
+            std::cout << "geocoin-node smoke: mining-sha256="
+                      << geocoin::consensus::get_mining_sha256_backend() << "\n";
+            return 0;
+        }
+
+#endif
         load_secret_from_file_or_env(
             rpc_pass,
             rpc_pass_file,

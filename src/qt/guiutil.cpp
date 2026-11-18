@@ -357,7 +357,11 @@ QString glassPanelStyleSheet(const QString& theme)
     const QString titleBg = isDarkTheme(theme)
         ? QStringLiteral("rgba(9, 13, 19, 235)")
         : QStringLiteral("rgba(255, 252, 242, 235)");
+#ifdef GEOCOIN_NATIVE_MACOS
+    auto style = QStringLiteral(
+#else
     return QStringLiteral(
+#endif
         "QGroupBox, QFrame#glassPanel {"
         "  background: %1;"
         "  color: %2;"
@@ -382,12 +386,23 @@ QString glassPanelStyleSheet(const QString& theme)
         "  border-radius: 8px;"
         "}"
     ).arg(glass, c.text, c.border, c.borderLight, c.borderShadow, titleBg);
+#ifdef GEOCOIN_NATIVE_MACOS
+    style += QStringLiteral(
+        "QGroupBox[geoNativeGlass=\"true\"], QFrame#glassPanel[geoNativeGlass=\"true\"] {"
+        "  background: transparent; border-color: transparent;"
+        "}");
+    return style;
+#endif
 }
 
 QString glassInputStyleSheet(const QString& theme)
 {
     const GlassColors c = glassColors(theme);
+#ifdef GEOCOIN_NATIVE_MACOS
+    auto style = QStringLiteral(
+#else
     return QStringLiteral(
+#endif
         "QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QDateTimeEdit {"
         "  background-color: %1;"
         "  color: %2;"
@@ -418,6 +433,12 @@ QString glassInputStyleSheet(const QString& theme)
         "  selection-color: #FFFFFF;"
         "}"
     ).arg(c.field, c.text, c.selection, c.border, c.borderLight, c.fieldFocus, c.borderLight, c.button, c.pageAlt);
+#ifdef GEOCOIN_NATIVE_MACOS
+    const QString arrow = isDarkTheme(theme) ? QStringLiteral(":/icons/spin_down_dark")
+                                             : QStringLiteral(":/icons/spin_down_light");
+    style += QStringLiteral("QComboBox::down-arrow { image: url(%1); width: 9px; height: 6px; }").arg(arrow);
+    return style;
+#endif
 }
 
 QString glassListStyleSheet(const QString& theme)

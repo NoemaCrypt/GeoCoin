@@ -1,5 +1,27 @@
 # Find dependencies
 find_package(OpenSSL REQUIRED)
+# APPLE: pkg-config discovery (via GStreamer's bundled openssl.pc) reports the
+# 1.1.1 headers under GStreamer.framework/Headers. The linked Homebrew
+# OpenSSL@3 dylib is 3.x; compile against the matching 3.x headers so the
+# EVP_MAC/OSSL_PARAM HKDF path resolves.
+if(GEOCOIN_MACOS_ARM64)
+    get_target_property(_geocoin_openssl_include OpenSSL::Crypto
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    if(_geocoin_openssl_include MATCHES "GStreamer")
+        get_filename_component(_geocoin_openssl_lib_dir
+                               "${OPENSSL_CRYPTO_LIBRARY}" DIRECTORY)
+        get_filename_component(_geocoin_openssl_prefix
+                               "${_geocoin_openssl_lib_dir}" DIRECTORY)
+        set(_geocoin_openssl_include "${_geocoin_openssl_prefix}/include")
+    endif()
+    if(EXISTS "${_geocoin_openssl_include}/openssl/core_names.h")
+        set_target_properties(OpenSSL::Crypto OpenSSL::SSL PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${_geocoin_openssl_include}")
+        set(OPENSSL_INCLUDE_DIR "${_geocoin_openssl_include}"
+            CACHE PATH "OpenSSL headers matching the linked OpenSSL@3 dylib"
+            FORCE)
+    endif()
+endif()
 find_package(Threads REQUIRED)
 include(cmake/GeographicLib.cmake)
 find_package(Boost 1.71 REQUIRED)
@@ -182,6 +204,32 @@ else()
     set(_geocoin_rocksdb_check_includes "${ROCKSDB_INCLUDE_DIR}")
 endif()
 
+# macOS/arm64: the Homebrew rocksdb bottle records its bz2 dependency as a
+# literal .tbd path from the SDK the bottle was built against (e.g.
+# .../SDKs/MacOSX26.sdk/usr/lib/libbz2.tbd), which goes stale after Xcode
+# upgrades. Replace any such absolute SDK .tbd entry with the portable flag.
+if(GEOCOIN_MACOS_ARM64)
+    foreach(_geocoin_rocksdb_target IN ITEMS RocksDB::rocksdb rocksdb::rocksdb)
+        if(TARGET ${_geocoin_rocksdb_target})
+            get_target_property(_geocoin_rocksdb_links ${_geocoin_rocksdb_target} INTERFACE_LINK_LIBRARIES)
+            if(_geocoin_rocksdb_links)
+                set(_geocoin_rocksdb_fixed_links "")
+                foreach(_geocoin_rocksdb_item IN LISTS _geocoin_rocksdb_links)
+                    if(_geocoin_rocksdb_item MATCHES "/SDKs/MacOSX[0-9.]+\\.sdk/usr/lib/libbz2\\.tbd$")
+                        list(APPEND _geocoin_rocksdb_fixed_links "-lbz2")
+                    else()
+                        list(APPEND _geocoin_rocksdb_fixed_links "${_geocoin_rocksdb_item}")
+                    endif()
+                endforeach()
+                list(REMOVE_DUPLICATES _geocoin_rocksdb_fixed_links)
+                set_target_properties(${_geocoin_rocksdb_target} PROPERTIES
+                    INTERFACE_LINK_LIBRARIES "${_geocoin_rocksdb_fixed_links}")
+            endif()
+            break()
+        endif()
+    endforeach()
+endif()
+
 
 # Check the selected headers and library together, before building the node.
 # Older distro packages lack write stalls and can also fail in db.h under C++20.
@@ -255,3 +303,14 @@ elseif(WIN32)
     set(OQS_ENABLE_KEM_ml_kem_768_x86_64 OFF CACHE BOOL "" FORCE)
 endif()
 add_subdirectory(liboqs EXCLUDE_FROM_ALL)
+
+if(GEOCOIN_MACOS_ARM64 AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|arm64v8")
+    # On Apple silicon the x86_64 branch above is skipped, so liboqs' own
+    # alg_support logic selects the NEON aarch64 ML-KEM backend. Echo the
+    # chosen backend into the configure log for auditors of arm64 builds.
+    if(OQS_ENABLE_KEM_ml_kem_768_aarch64)
+        message(STATUS "liboqs on Darwin/arm64: ML-KEM-768 uses the aarch64 (NEON) backend; falcon_512_clean linked directly")
+    else()
+        message(STATUS "liboqs on Darwin/arm64: ML-KEM-768 uses the portable ref backend")
+    endif()
+endif()

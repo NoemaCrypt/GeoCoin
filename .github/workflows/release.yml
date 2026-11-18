@@ -65,6 +65,8 @@ jobs:
             platform: linux
           - os: windows-2022
             platform: windows
+          - os: macos-26
+            platform: macos
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -89,6 +91,67 @@ jobs:
         run: |
           chmod +x scripts/bootstrap-ubuntu-22.04.sh
           ./scripts/bootstrap-ubuntu-22.04.sh --with-gui
+
+      - name: Bootstrap macOS dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash scripts/bootstrap-macos.sh --profile ci
+
+      - name: Build and test macOS arm64 release
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cmake --preset macos-arm64-release
+          cmake --build --preset macos-arm64-release --parallel 3
+          ctest --test-dir out/build/macos-arm64-release --output-on-failure --no-tests=error
+          cmake --preset macos-arm64-release -S libgeo
+          cmake --build libgeo/out/build/macos-arm64-release --parallel 3
+
+      - name: Configure macOS release signing
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GEOCOIN_MACOS_SIGN_IDENTITY: ${{ vars.GEOCOIN_MACOS_SIGN_IDENTITY }}
+          GEOCOIN_MACOS_CERTIFICATE_B64: ${{ secrets.GEOCOIN_MACOS_CERTIFICATE_B64 }}
+          GEOCOIN_MACOS_CERTIFICATE_PASSWORD: ${{ secrets.GEOCOIN_MACOS_CERTIFICATE_PASSWORD }}
+          GEOCOIN_MACOS_NOTARY_KEY_B64: ${{ secrets.GEOCOIN_MACOS_NOTARY_KEY_B64 }}
+          GEOCOIN_MACOS_NOTARY_KEY_ID: ${{ vars.GEOCOIN_MACOS_NOTARY_KEY_ID }}
+          GEOCOIN_MACOS_NOTARY_ISSUER: ${{ vars.GEOCOIN_MACOS_NOTARY_ISSUER }}
+        run: bash scripts/setup_macos_release_signing.sh
+
+      - name: Package and smoke test macOS releases
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash scripts/package_portable_macos.sh --profile user --smoke
+          bash scripts/package_portable_macos.sh --profile admin
+          bash scripts/package_portable_macos.sh --profile sdk
+          python3 scripts/check_release_sdk.py out/portable/GeoCoin-macos-arm64-sdk
+
+      - name: Remove temporary macOS signing keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          case "${GEOCOIN_MACOS_CI_KEYCHAIN:-}" in
+            "$RUNNER_TEMP"/geocoin-signing.*/GeoCoin.keychain-db)
+              security delete-keychain "$GEOCOIN_MACOS_CI_KEYCHAIN"
+              rmdir "$(dirname "$GEOCOIN_MACOS_CI_KEYCHAIN")"
+              ;;
+          esac
+
+      - name: Stage macOS release archives
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p out/workflow-release
+          cp out/portable/GeoCoin-macos-arm64{,-admin,-sdk}-portable.tar.gz out/workflow-release/
+          cp out/portable/GeoCoin-macos-arm64.dmg out/workflow-release/
+          python3 .release-tooling/generate_sbom.py \
+            out/workflow-release/release-components-macos.cdx.json \
+            --version "$RELEASE_TAG" \
+            --platform macos \
+            --resolved-root out/macos-deps/installed \
+            --require-resolved-vcpkg
 
       - name: Bootstrap vcpkg
         if: runner.os == 'Windows'
@@ -266,12 +329,12 @@ jobs:
       - name: Assemble portable release assets
         shell: bash
         run: |
-          for platform in linux windows; do
+          for platform in linux windows macos; do
             recorded_sha=$(cat "out/downloads/portable-$platform/source-$platform.txt")
             test "$recorded_sha" = "$SOURCE_SHA"
           done
           mkdir -p out/release-assets
-          find out/downloads -type f \( -name '*.zip' -o -name '*.tar.gz' \) -print0 | while IFS= read -r -d '' file; do
+          find out/downloads -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.dmg' \) -print0 | while IFS= read -r -d '' file; do
             cp "$file" out/release-assets/
           done
 
@@ -290,9 +353,9 @@ jobs:
             --require-resolved-vcpkg \
             "${sbom_merge_args[@]}"
 
-          mapfile -t bundles < <(find out/release-assets -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) | sort)
-          if [[ "${#bundles[@]}" -ne 6 ]]; then
-            echo "Expected user, admin and SDK bundles for Linux and Windows." >&2
+          mapfile -t bundles < <(find out/release-assets -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.dmg' \) | sort)
+          if [[ "${#bundles[@]}" -ne 10 || ! -f out/release-assets/GeoCoin-macos-arm64.dmg ]]; then
+            echo "Expected user, admin and SDK archives for Linux, Windows and macOS, plus the macOS disk image." >&2
             exit 1
           fi
 

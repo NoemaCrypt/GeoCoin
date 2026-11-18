@@ -260,6 +260,10 @@ struct HeaderPow {
     uint8_t length_block[64]{};
     alignas(16) uint8_t length_rounds[512]{};
     bool have_sha_ni = false;
+#if defined(GEOCOIN_MACOS_ARM64)
+    bool have_arm_sha2 = false;
+    IokeSha256d124Arm64 arm_pow{};
+#endif
 
     static HeaderPow prepare(const uint8_t* header) {
         HeaderPow pow;
@@ -274,6 +278,12 @@ struct HeaderPow {
         pow.length_block[63] = 0xe0;
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
         pow.have_sha_ni = ioke_sha256_backend_available(IOKE_SHA256_BACKEND_NATIVE) != 0;
+#endif
+#if defined(GEOCOIN_MACOS_ARM64)
+        pow.have_arm_sha2 = ioke_sha256_backend_available(IOKE_SHA256_BACKEND_NATIVE) != 0;
+        if (pow.have_arm_sha2) {
+            ioke_sha256d124_arm64_prepare(&pow.arm_pow, header);
+        }
 #endif
         if (pow.have_sha_ni) {
             ioke_sha256_expand_rounds_x86_sha_ni(pow.length_block, pow.length_rounds);
@@ -304,6 +314,12 @@ struct HeaderPow {
     }
 
     void hash_pair(uint64_t nonce_a, uint64_t nonce_b, uint8_t out_a[32], uint8_t out_b[32]) const {
+#if defined(GEOCOIN_MACOS_ARM64)
+        if (have_arm_sha2) {
+            ioke_sha256d124_arm64_hash2(&arm_pow, nonce_a, nonce_b, out_a, out_b);
+            return;
+        }
+#endif
         if (!have_sha_ni) {
             hash(nonce_a, out_a);
             hash(nonce_b, out_b);
@@ -342,6 +358,12 @@ struct HeaderPow {
 
     void hash4(uint64_t n0, uint64_t n1, uint64_t n2, uint64_t n3, uint8_t out[4][32]) const {
         const uint64_t nonces[4] = {n0, n1, n2, n3};
+#if defined(GEOCOIN_MACOS_ARM64)
+        if (have_arm_sha2) {
+            ioke_sha256d124_arm64_hash4(&arm_pow, nonces, out);
+            return;
+        }
+#endif
         if (!have_sha_ni) {
             for (int lane = 0; lane < 4; ++lane) {
                 hash(nonces[lane], out[lane]);
@@ -513,7 +535,11 @@ MiningResult mine_block_bytes(
             const auto group = std::to_string(cpu.group);
             groups[group] = groups.value(group, size_t{0}) + 1;
         }
+#if defined(GEOCOIN_MACOS_ARM64)
+        std::cerr << "CPU mining scheduler slots: " << groups.dump() << '\n';
+#else
         std::cerr << "CPU mining group bindings: " << groups.dump() << '\n';
+#endif
     }
     geocoin::node::join_cpu_workers(workers);
     if (!started.ok()) result.error = "CPU worker startup failed: " + started.error;

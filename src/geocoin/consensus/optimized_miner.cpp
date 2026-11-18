@@ -123,10 +123,21 @@ uint64_t benchmark_backend(MiningSha256Backend backend, std::chrono::millisecond
         ioke_sha256_set_backend(IOKE_SHA256_BACKEND_LEGACY);
     }
 
+#if defined(GEOCOIN_MACOS_ARM64)
+    bytes input(124);
+    constexpr size_t nonce_offset = 116;
+#else
     bytes input(92);
+#endif
     for (size_t i = 0; i < input.size(); ++i) {
         input[i] = static_cast<uint8_t>((i * 131U + 17U) & 0xffU);
     }
+#if defined(GEOCOIN_MACOS_ARM64)
+    IokeSha256d124Arm64 arm_pow;
+    if (backend == MiningSha256Backend::Native) {
+        ioke_sha256d124_arm64_prepare(&arm_pow, input.data());
+    }
+#endif
 
     constexpr uint64_t kBatch = 1024;
     Hash256 hash{};
@@ -137,8 +148,24 @@ uint64_t benchmark_backend(MiningSha256Backend backend, std::chrono::millisecond
     do {
         for (uint64_t i = 0; i < kBatch; ++i) {
             const uint64_t nonce = iterations + i;
+#if defined(GEOCOIN_MACOS_ARM64)
+            if (backend == MiningSha256Backend::Native) {
+                const uint64_t nonces[4] = {nonce, nonce + 1, nonce + 2, nonce + 3};
+                uint8_t digests[4][32];
+                ioke_sha256d124_arm64_hash4(&arm_pow, nonces, digests);
+                for (const auto& digest : digests) {
+                    sink += digest[0];
+                }
+                i += 3;
+                continue;
+            }
+#endif
             for (int b = 0; b < 8; ++b) {
+#if defined(GEOCOIN_MACOS_ARM64)
+                input[nonce_offset + b] = static_cast<uint8_t>(nonce >> (8 * b));
+#else
                 input[80 + b] = static_cast<uint8_t>(nonce >> (8 * b));
+#endif
             }
             if (backend == MiningSha256Backend::OpenSSL) {
                 hash = openssl_double_sha256(input);
@@ -263,7 +290,11 @@ std::string get_mining_sha256_backend() {
 static std::atomic<int64_t> nHPSTimerStart(0);
 static std::atomic<int64_t> nHashCounter(0);
 static std::atomic<int64_t> nLogTime(0);
+#if defined(GEOCOIN_MACOS_ARM64)
+static std::atomic<double> dHashesPerSec{0.0};
+#else
 double dHashesPerSec = 0.0;
+#endif
 
 OptimizedMiner::OptimizedMiner()
     : hashrate_(0.0),
@@ -345,9 +376,14 @@ bool OptimizedMiner::mine_block_optimized(
     block.header.geo_tag = tag.geo_tag;
 
     // Вывод target один раз
+#if defined(GEOCOIN_MACOS_ARM64)
+    static std::atomic<bool> target_printed{false};
+    if (thread_id == 0 && !target_printed.exchange(true, std::memory_order_relaxed)) {
+#else
     static bool target_printed = false;
     if (!target_printed && thread_id == 0) {
         target_printed = true;
+#endif
         if (SyncDebugEnabled()) {
             GEO_LOG_DEBUG("miner", "Mining target: 0x" << std::hex << target_bits << std::dec);
             {
@@ -375,6 +411,19 @@ bool OptimizedMiner::mine_block_optimized(
     // nonce offset = 4 + 4 + 32 + 32 + 4 + 8 + 32 = 116
     constexpr size_t NONCE_OFFSET = 116;
 
+#if defined(GEOCOIN_MACOS_ARM64)
+    const auto backend = static_cast<MiningSha256Backend>(
+        g_mining_sha256_effective_backend.load(std::memory_order_relaxed));
+    const bool native_arm = header_bytes.size() == 124 &&
+        (backend == MiningSha256Backend::Auto || backend == MiningSha256Backend::Native) &&
+        ioke_sha256_backend_available(IOKE_SHA256_BACKEND_NATIVE);
+    IokeSha256d124Arm64 arm_pow;
+    uint8_t digests[4][32];
+    if (native_arm) {
+        ioke_sha256d124_arm64_prepare(&arm_pow, header_bytes.data());
+    }
+#endif
+
     uint64_t local_hashes = 0;
     auto flush_hashes = [&]() {
         if (local_hashes == 0) {
@@ -390,9 +439,31 @@ bool OptimizedMiner::mine_block_optimized(
     while (max_iterations == 0 || iterations < max_iterations) {
         // Проверка флага остановки каждые 4096 итераций
         if ((iterations & 0xFFF) == 0 && stop_flag && !stop_flag->load()) {
+#if defined(GEOCOIN_MACOS_ARM64)
+            flush_hashes();
+#endif
             return false;
         }
 
+#if defined(GEOCOIN_MACOS_ARM64)
+        const uint64_t nonce = block.header.nonce;
+        Hash256 hash;
+        if (native_arm) {
+            const unsigned lane = iterations & 3;
+            if (lane == 0) {
+                const uint64_t nonces[4] = {
+                    nonce, nonce + nonce_step, nonce + 2 * nonce_step, nonce + 3 * nonce_step};
+                ioke_sha256d124_arm64_hash4(&arm_pow, nonces, digests);
+            }
+            std::memcpy(hash.data(), digests[lane], hash.size());
+        } else {
+            for (int i = 0; i < 8; ++i) {
+                header_bytes[NONCE_OFFSET + i] = static_cast<byte>(nonce >> (i * 8));
+            }
+            hash = mining_double_sha256(header_bytes);
+        }
+
+#else
         // ОПТИМИЗАЦИЯ: Обновляем только nonce в буфере (8 байт LE)
         uint64_t nonce = block.header.nonce;
         for (int i = 0; i < 8; i++) {
@@ -401,6 +472,8 @@ bool OptimizedMiner::mine_block_optimized(
 
         // Вычисляем GeoPoW hash: double_sha256(header92)
         auto hash = mining_double_sha256(header_bytes);
+
+#endif
 
         // Быстрая проверка старших байтов
         if (quick_check_target(hash, target)) {
@@ -474,6 +547,41 @@ bool OptimizedMiner::mine_block_optimized(
             // Обновляем hashrate каждые 4 секунды
             if (nNow - nStart > 4000) {
                 int64_t counter = nHashCounter.exchange(0, std::memory_order_relaxed);
+#if defined(GEOCOIN_MACOS_ARM64)
+                if (counter > 0) {
+                    const double rate = 1000.0 * counter / (nNow - nStart);
+                    dHashesPerSec.store(rate, std::memory_order_relaxed);
+                    hashrate_ = rate;
+                    nHPSTimerStart.store(nNow, std::memory_order_relaxed);
+
+                    int64_t nTimeNow = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()
+                    ).count();
+
+                    int64_t lastLog = nLogTime.load(std::memory_order_relaxed);
+
+                    // Выводим каждые 5 секунд
+                    if (nTimeNow - lastLog >= 5) {
+                        if (nLogTime.compare_exchange_strong(lastLog, nTimeNow, std::memory_order_relaxed)) {
+                            if (SyncDebugEnabled()) {
+                                if (rate >= 1000000.0) {
+                                    GEO_LOG_DEBUG("miner", "hashmeter " << std::fixed << std::setprecision(2) << (rate / 1000000.0) << " Mhash/s");
+                                } else if (rate >= 1000.0) {
+                                    GEO_LOG_DEBUG("miner", "hashmeter " << std::fixed << std::setprecision(2) << (rate / 1000.0) << " khash/s");
+                                } else {
+                                    GEO_LOG_DEBUG("miner", "hashmeter " << std::fixed << std::setprecision(0) << rate << " hash/s");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (hashrate_ <= 0.0) {
+                hashrate_ = dHashesPerSec.load(std::memory_order_relaxed);
+            }
+        }
+
+#else
                 if (counter > 0) {
                     dHashesPerSec = 1000.0 * counter / (nNow - nStart);
                     hashrate_ = dHashesPerSec;
@@ -506,6 +614,7 @@ bool OptimizedMiner::mine_block_optimized(
             }
         }
 
+#endif
         // Если nonce переполнился, выходим (caller должен пересоздать шаблон блока)
         if (block.header.nonce < prev_nonce_value) {
             flush_hashes();

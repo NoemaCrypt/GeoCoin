@@ -16,6 +16,9 @@
 
 #include <QApplication>
 #include <QMenuBar>
+#ifdef GEOCOIN_NATIVE_MACOS
+#include "miningpage.h"
+#endif
 #include <QMenu>
 #include <QToolBar>
 #include <QStatusBar>
@@ -415,6 +418,9 @@ bool GeoCoinGUI::runSmokeChecks(QString *error)
 
 void GeoCoinGUI::createMenuBar()
 {
+#ifdef GEOCOIN_NATIVE_MACOS
+    if (QApplication::platformName() == QStringLiteral("cocoa")) menuBar()->setNativeMenuBar(false);
+#endif
     // File menu
     fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(createWalletAction);
@@ -446,7 +452,14 @@ void GeoCoinGUI::createMenuBar()
     langEnglishAction->setChecked(true);
 
     QSettings settings;
+#ifdef GEOCOIN_NATIVE_MACOS
+    const QString envLanguage = qEnvironmentVariable("GEOCOIN_LANG").trimmed();
+    const QString code = settings.value(QStringLiteral("ui/language"),
+                                        envLanguage).toString().trimmed().toLower()
+                               .split('_').value(0).split('.').value(0);
+#else
     const QString code = settings.value(QStringLiteral("ui/language"), QStringLiteral("en")).toString();
+#endif
     if (code == "ru") {
         langRussianAction->setChecked(true);
     } else {
@@ -479,6 +492,43 @@ void GeoCoinGUI::createMenuBar()
     helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(aboutAction);
 }
+
+#ifdef GEOCOIN_NATIVE_MACOS
+void GeoCoinGUI::invokeNativeMenuAction(const QString& command)
+{
+    if (closing_) return;
+    const std::pair<const char*, QAction*> commands[] = {
+        {"create-wallet", createWalletAction}, {"load-wallet", loadWalletAction},
+        {"close-wallet", closeWalletAction}, {"backup-wallet", backupWalletAction},
+        {"export-private-key", exportPrivateKeyAction}, {"import-private-key", importPrivateKeyAction},
+        {"encrypt-wallet", encryptWalletAction}, {"change-passphrase", changePassphraseAction},
+        {"options", optionsAction}, {"about", aboutAction},
+    };
+    for (const auto& [name, action] : commands) {
+        if (command == QLatin1String(name)) {
+            if (action->isEnabled()) action->trigger();
+            return;
+        }
+    }
+}
+
+MiningPage* GeoCoinGUI::nativeMiningController() const
+{
+    return walletFrame ? walletFrame->findChild<MiningPage*>() : nullptr;
+}
+
+void GeoCoinGUI::syncNativeTheme(const QString& theme)
+{
+    QSettings().setValue(QStringLiteral("ui/theme"), theme);
+    applyCurrentTheme();
+}
+
+void GeoCoinGUI::refreshNativeLanguage()
+{
+    retranslateUi();
+    if (walletFrame) walletFrame->rebuildForLanguageChange();
+}
+#endif
 
 void GeoCoinGUI::applyCurrentTheme()
 {
@@ -901,6 +951,24 @@ void GeoCoinGUI::updateStatusBarLayout()
 
 void GeoCoinGUI::updateMiningStatusText()
 {
+#ifdef GEOCOIN_NATIVE_MACOS
+    QString text;
+    if (width() < 900) {
+        const double cpu = statusCpuMiningEnabled ? statusCpuHashrate : 0.0;
+        const double gpu = statusGpuMiningEnabled ? statusGpuHashrate : 0.0;
+        text = QStringLiteral("T %1  CPU %2  GPU %3")
+            .arg(GUIUtil::formatHashrate(cpu + gpu), GUIUtil::formatHashrate(cpu), GUIUtil::formatHashrate(gpu));
+    } else {
+        text = statusMiningText_;
+    }
+    // The status bar shares one row with connections, blocks, sync bar and the
+    // theme toggle. Elide at the width the label actually owns so the rate row
+    // never clips at the narrow (640px) end of the responsive sweep.
+    const int available = labelHashrateStatus->contentsRect().width();
+    if (available > 0)
+        text = labelHashrateStatus->fontMetrics().elidedText(text, Qt::ElideMiddle, available);
+    labelHashrateStatus->setText(text);
+#else
     if (width() < 900) {
         const double cpu = statusCpuMiningEnabled ? statusCpuHashrate : 0.0;
         const double gpu = statusGpuMiningEnabled ? statusGpuHashrate : 0.0;
@@ -909,6 +977,7 @@ void GeoCoinGUI::updateMiningStatusText()
     } else {
         labelHashrateStatus->setText(statusMiningText_);
     }
+#endif
 }
 
 bool GeoCoinGUI::eventFilter(QObject *watched, QEvent *event)

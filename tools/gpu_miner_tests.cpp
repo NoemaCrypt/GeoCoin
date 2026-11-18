@@ -244,7 +244,11 @@ void test_sessions()
 namespace geocoin::tools::gpu_miner {
 std::vector<DeviceInfo> list_cuda_devices() { return {device(0)}; }
 std::vector<DeviceInfo> list_hip_devices() { return {}; }
+#ifdef GEOCOIN_MACOS_ARM64
+std::vector<DeviceInfo> list_opencl_devices() { return {device(0, Backend::OpenCl)}; }
+#else
 std::vector<DeviceInfo> list_opencl_devices() { return {}; }
+#endif
 MiningResult mine_cuda(const MiningJob& job, const std::vector<int>&) {
     while (!job_cancelled(job)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     MiningResult result;
@@ -253,7 +257,15 @@ MiningResult mine_cuda(const MiningJob& job, const std::vector<int>&) {
     return result;
 }
 MiningResult mine_hip(const MiningJob&, const std::vector<int>&) { throw std::runtime_error("unexpected HIP"); }
+#ifdef GEOCOIN_MACOS_ARM64
+MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& devices) {
+    auto result = mine_cuda(job, devices);
+    result.backend = "opencl";
+    return result;
+}
+#else
 MiningResult mine_opencl(const MiningJob&, const std::vector<int>&) { throw std::runtime_error("unexpected OpenCL"); }
+#endif
 }
 
 int main(int argc, char** argv)

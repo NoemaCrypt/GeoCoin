@@ -2,6 +2,10 @@
 
 #ifdef GEOCOIN_GPU_ENABLE_OPENCL
 
+#ifdef GEOCOIN_MACOS_ARM64
+#include "gpu_miner_apple_work.hpp"
+#endif
+
 #ifdef __APPLE__
 #include <OpenCL/opencl.h>
 #else
@@ -460,6 +464,7 @@ void check_cl(cl_int error, const char* operation)
     }
 }
 
+#ifndef GEOCOIN_MACOS_ARM64
 geocoin::uint256 bits_to_target(uint32_t bits)
 {
     const uint8_t exponent = static_cast<uint8_t>(bits >> 24);
@@ -661,6 +666,7 @@ std::array<uint32_t, 37> make_opencl_work(const std::vector<byte>& block_bytes, 
     }
     return work;
 }
+#endif
 
 } // namespace
 
@@ -715,7 +721,11 @@ MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_id
 
     const uint64_t nonce_stride = static_cast<uint64_t>(all_devices.size());
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(job.timeout_sec);
+#ifdef GEOCOIN_MACOS_ARM64
+    const auto work = apple::make_work(job.block_bytes, job.bits);
+#else
     const auto work = make_opencl_work(job.block_bytes, job.bits);
+#endif
 
     std::atomic<bool> found{false};
     std::atomic<uint64_t> total_hashes{0};

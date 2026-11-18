@@ -7,7 +7,9 @@
 #include "geocoin/utils/metrics.hpp"
 
 #include <algorithm>
+#if !defined(GEOCOIN_MACOS_ARM64)
 #include <functional>
+#endif
 #include <iostream>
 #include <vector>
 
@@ -93,6 +95,9 @@ bool Blockchain::initialize() try {
     };
 
     const Height UNSET_HEIGHT = std::numeric_limits<Height>::max();
+#if defined(GEOCOIN_MACOS_ARM64)
+    const Hash256 expected_genesis = consensus::Params().get_genesis_hash();
+#endif
 
     for (const auto& record : block_records) {
         if (record.header.get_hash() != record.hash) {
@@ -110,11 +115,15 @@ bool Blockchain::initialize() try {
         index->hash = record.hash;
         index->sequence_id = next_sequence_id_++;
 
+#if defined(GEOCOIN_MACOS_ARM64)
+        index->height = UNSET_HEIGHT;
+#else
         if (record.height != UNSET_HEIGHT) {
             index->height = record.height;
         } else if (record.header.prev_block_hash == Hash256{}) {
             index->height = 0;
         }
+#endif
         if (record.has_chain_work) {
             index->chain_work = record.chain_work;
         }
@@ -143,7 +152,9 @@ bool Blockchain::initialize() try {
     // Если загруженная цепь имеет неверный genesis, завершаем работу сразу
     // ========================================================================
     if (!block_index_.empty()) {
+#if !defined(GEOCOIN_MACOS_ARM64)
         Hash256 expected_genesis = consensus::Params().get_genesis_hash();
+#endif
 
         if (block_index_.count(expected_genesis) == 0 && !has_pruned_anchor) {
             std::ostringstream expected;
@@ -180,6 +191,54 @@ bool Blockchain::initialize() try {
     GEO_LOG_INFO("blockchain", "Linking blocks and checking chain integrity...");
     int orphan_blocks = 0;
 
+#if defined(GEOCOIN_MACOS_ARM64)
+    for (auto& [hash, index] : block_index_) {
+        if (has_pruned_anchor && hash == pruned_anchor.hash) {
+            index->height = pruned_anchor.height;
+            continue;
+        }
+        if (index->header.prev_block_hash == Hash256{}) {
+            if (hash == expected_genesis) {
+                index->height = 0;
+            }
+            continue;
+        }
+        index->prev = find_block_index(index->header.prev_block_hash);
+        if (!index->prev) {
+            GEO_LOG_ERROR(
+                "blockchain",
+                "Block (hash=" << hash_to_string(hash) << ") references unknown prev block: "
+                << hash_to_string(index->header.prev_block_hash)
+            );
+            ++orphan_blocks;
+        }
+    }
+
+    // Follow parents until a computed height is found, then fill the path
+    // backwards. The index size bounds the walk even if links form a cycle.
+    std::vector<chain::BlockIndex*> height_path;
+    bool invalid_height_graph = false;
+    for (auto& [hash, index] : block_index_) {
+        (void)hash;
+        height_path.clear();
+        auto* ancestor = index.get();
+        while (ancestor && ancestor->height == UNSET_HEIGHT &&
+               height_path.size() < block_index_.size()) {
+            height_path.push_back(ancestor);
+            ancestor = ancestor->prev;
+        }
+        if (!ancestor || ancestor->height == UNSET_HEIGHT ||
+            height_path.size() >= UNSET_HEIGHT - ancestor->height) {
+            invalid_height_graph = true;
+            break;
+        }
+        Height height = ancestor->height;
+        for (auto it = height_path.rbegin(); it != height_path.rend(); ++it) {
+            (*it)->height = ++height;
+        }
+    }
+
+#else
     for (auto& [hash, index] : block_index_) {
         const bool is_pruned_anchor =
             has_pruned_anchor &&
@@ -263,6 +322,8 @@ bool Blockchain::initialize() try {
     for (auto& [hash, index] : block_index_) {
         compute_height(index.get());
     }
+
+#endif
 
     // КРИТИЧНО: Если есть блоки-сироты, цепь повреждена
     if (orphan_blocks > 0 || invalid_height_graph) {

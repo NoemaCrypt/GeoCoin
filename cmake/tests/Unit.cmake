@@ -433,7 +433,12 @@ if(BUILD_QT_GUI)
     )
     geocoin_stage_runtime_dependencies(test_gui_wallet_persistence)
     find_program(XVFB_RUN_EXECUTABLE xvfb-run)
-    if(XVFB_RUN_EXECUTABLE)
+    if(GEOCOIN_MACOS_ARM64)
+        add_test(
+            NAME test_gui_wallet_persistence
+            COMMAND $<TARGET_FILE:test_gui_wallet_persistence> -platform offscreen
+        )
+    elseif(XVFB_RUN_EXECUTABLE)
         add_test(
             NAME test_gui_wallet_persistence
             COMMAND ${XVFB_RUN_EXECUTABLE} -a
@@ -501,7 +506,12 @@ if(BUILD_QT_GUI)
             Threads::Threads
     )
     geocoin_stage_runtime_dependencies(test_gui_contract)
-    if(XVFB_RUN_EXECUTABLE)
+    if(GEOCOIN_MACOS_ARM64)
+        add_test(
+            NAME test_gui_contract
+            COMMAND $<TARGET_FILE:test_gui_contract> -platform offscreen
+        )
+    elseif(XVFB_RUN_EXECUTABLE)
         add_test(
             NAME test_gui_contract
             COMMAND ${XVFB_RUN_EXECUTABLE} -a
@@ -629,6 +639,9 @@ target_compile_definitions(test_node_sync_recovery PRIVATE
 geocoin_stage_runtime_dependencies(test_node_sync_recovery)
 add_test(NAME test_node_sync_recovery COMMAND test_node_sync_recovery)
 set_tests_properties(test_node_sync_recovery PROPERTIES LABELS "reorg;recovery;node;p2p" TIMEOUT 60)
+if(GEOCOIN_MACOS_ARM64)
+    set_tests_properties(test_node_sync_recovery PROPERTIES TIMEOUT 180)
+endif()
 
 add_executable(test_hashes tests/test_hashes.cpp)
 target_link_libraries(
@@ -729,6 +742,9 @@ target_link_libraries(
 target_compile_definitions(test_peer_policy PRIVATE GEOCOIN_ENABLE_PEER_MANAGER_TEST_ACCESS)
 geocoin_stage_runtime_dependencies(test_peer_policy)
 add_test(NAME test_peer_policy COMMAND test_peer_policy)
+if(GEOCOIN_MACOS_ARM64)
+    set_tests_properties(test_peer_policy PROPERTIES TIMEOUT 300)
+endif()
 
 add_executable(test_peer_transport_units tests/test_peer_transport_units.cpp)
 target_link_libraries(
@@ -1068,6 +1084,9 @@ geocoin_stage_runtime_dependencies(test_wallet_format_migration)
 add_test(NAME test_wallet_format_migration COMMAND test_wallet_format_migration)
 
 add_executable(test_gpu_miner_runtime tools/gpu_miner_tests.cpp)
+if(GEOCOIN_MACOS_ARM64)
+    target_sources(test_gpu_miner_runtime PRIVATE tools/gpu_miner_metal_stub.cpp)
+endif()
 if(TARGET test_gui_wallet_lifecycle)
     add_dependencies(test_gui_wallet_lifecycle test_gpu_miner_runtime)
 endif()
@@ -1095,6 +1114,12 @@ if(TARGET geocoin-gpu-miner)
     endif()
     geocoin_stage_runtime_dependencies(test_gpu_miner_backend_cancel)
     add_test(NAME test_gpu_miner_backend_cancel COMMAND test_gpu_miner_backend_cancel)
+    if(GEOCOIN_MACOS_ARM64 AND GEOCOIN_ENABLE_GPU_LOCALNET_TESTS AND
+       "GEOCOIN_GPU_ENABLE_METAL=1" IN_LIST _geocoin_gpu_defs AND
+       "GEOCOIN_GPU_ENABLE_OPENCL=1" IN_LIST _geocoin_gpu_defs)
+        add_test(NAME test_gpu_miner_apple_pow COMMAND test_gpu_miner_backend_cancel --apple-pow)
+        set_tests_properties(test_gpu_miner_apple_pow PROPERTIES TIMEOUT 15 LABELS "gpu;metal;opencl")
+    endif()
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_address_compat.cpp")

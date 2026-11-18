@@ -242,10 +242,30 @@ bool GeoCoinGUI::runLayoutChecks(QString *error)
                     const int lineHeight = labelConnectionsText->fontMetrics().height();
                     if (statusBar()->height() < lineHeight || labelConnectionsText->height() < lineHeight)
                         record(context, QStringLiteral("Status bar clips its text"));
+#ifdef GEOCOIN_NATIVE_MACOS
+                    // cocoa/offscreen render 10pt at 96/72 = 1.333x the xcb logical px,
+                    // so the compact status string is elided in the middle ("GPU" -> "PU")
+                    // at narrow widths. The canonical (un-elided) string is kept in the
+                    // label tooltip's first line; check the tokens there and check the
+                    // visible elided text only for fitting its own width.
+                    const QString fullMiningRate = labelHashrateStatus->toolTip().isEmpty()
+                        ? labelHashrateStatus->text()
+                        : labelHashrateStatus->toolTip().section(QLatin1Char('\n'), 0, 0);
+                    if (!fullMiningRate.contains(QStringLiteral("CPU")) ||
+                        !fullMiningRate.contains(QStringLiteral("GPU")) ||
+                        labelHashrateStatus->fontMetrics().horizontalAdvance(labelHashrateStatus->text()) > labelHashrateStatus->contentsRect().width() + 1)
+                        record(context, QStringLiteral("Total/CPU/GPU mining rates are clipped: %1/%2 needs %3px has %4px text=%5 full=%6")
+                            .arg(QString::fromLatin1(labelHashrateStatus->metaObject()->className()),
+                                 labelHashrateStatus->objectName())
+                            .arg(labelHashrateStatus->fontMetrics().horizontalAdvance(labelHashrateStatus->text()))
+                            .arg(labelHashrateStatus->contentsRect().width())
+                            .arg(labelHashrateStatus->text(), fullMiningRate));
+#else
                     if (!labelHashrateStatus->text().contains(QStringLiteral("CPU")) ||
                         !labelHashrateStatus->text().contains(QStringLiteral("GPU")) ||
                         labelHashrateStatus->fontMetrics().horizontalAdvance(labelHashrateStatus->text()) > labelHashrateStatus->contentsRect().width())
                         record(context, QStringLiteral("Total/CPU/GPU mining rates are clipped"));
+#endif
                     if (!themeToggleButton->isVisible() || !statusBar()->rect().contains(themeToggleButton->geometry()))
                         record(context, QStringLiteral("Theme button is inaccessible"));
                     auto* toolbar = findChild<QToolBar*>(QStringLiteral("tabsToolbar"));

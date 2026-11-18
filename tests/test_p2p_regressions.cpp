@@ -231,6 +231,14 @@ void test_high_fd(bool send_path) {
     Fd reader(pair[1]);
     int capacity = 4096;
     check(::setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &capacity, sizeof(capacity)) == 0, "small send buffer");
+#if defined(GEOCOIN_MACOS_ARM64)
+    // Darwin's AF_UNIX buffers are small in both directions. Keep this below
+    // the payload so the high descriptor still exercises the writable wait.
+    int direction_capacity = 16 * 1024;
+    check(::setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &direction_capacity, sizeof(direction_capacity)) == 0 &&
+          ::setsockopt(pair[1], SOL_SOCKET, SO_RCVBUF, &direction_capacity, sizeof(direction_capacity)) == 0,
+          "send/receive buffers fit a partial payload");
+#endif
     auto sending = make_tcp_peer_transport("local:3030", pair[0]);
     const bytes payload(24000, 0x5a);
     bytes received;

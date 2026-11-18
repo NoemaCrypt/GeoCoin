@@ -332,6 +332,24 @@ void test_mine_block_limits_stop_and_easy_target()
            "very easy target finds a block quickly");
     expect(block.header.bits == 0x2100ffff, "mined block stores target bits");
     expect(hashes.load() <= 32, "easy mining respects iteration budget");
+
+#if defined(GEOCOIN_MACOS_ARM64)
+    expect(set_mining_sha256_backend("native"), "native ARM SHA2 mining is selectable");
+    block = make_block();
+    block.header.nonce = 7;
+    hashes.store(0);
+    expect(!miner.mine_block_optimized(block, 0x01003456, 0, {}, 0, 9, &stop, -1, &hashes, 4),
+           "native ARM batches respect a partial final batch");
+    expect(hashes.load() == 9 && block.header.nonce == 43, "native ARM counts only attempted nonces");
+
+    block = make_block();
+    block.header.nonce = std::numeric_limits<uint64_t>::max() - 3;
+    hashes.store(0);
+    expect(!miner.mine_block_optimized(block, 0x01003456, 0, {}, 0, 9, &stop, -1, &hashes, 2),
+           "native ARM batch stops at nonce wraparound");
+    expect(hashes.load() == 2 && block.header.nonce == 0, "native ARM ignores lanes after nonce wraparound");
+    expect(set_mining_sha256_backend("legacy"), "restore portable SHA backend");
+#endif
 }
 
 } // namespace

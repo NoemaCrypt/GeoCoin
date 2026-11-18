@@ -1,0 +1,18 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/images">
+        <file alias="background">@QT_ART@/images/background.png</file>
+        <file alias="background_dark">@QT_ART@/images/background_dark.png</file>
+    </qresource>
+    <qresource prefix="/translations">
+        <file alias="geocoin_en.qm">@QM_EN@</file>
+        <file alias="geocoin_ru.qm">@QM_RU@</file>
+    </qresource>
+    <qresource prefix="/icons">
+        <file alias="geocoin">@QT_ART@/icons/geocoin.png</file>
+        <file alias="spin_up_dark">@QT_ART@/icons/spin_up_dark.xpm</file>
+        <file alias="spin_down_dark">@QT_ART@/icons/spin_down_dark.xpm</file>
+        <file alias="spin_up_light">@QT_ART@/icons/spin_up_light.xpm</file>
+        <file alias="spin_down_light">@QT_ART@/icons/spin_down_light.xpm</file>
+    </qresource>
+</RCC>

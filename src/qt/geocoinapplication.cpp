@@ -20,6 +20,9 @@
 
 #include <QDebug>
 #include <QMessageBox>
+#ifdef GEOCOIN_NATIVE_MACOS
+#include "GeoCoinNativeFrontend.h"
+#endif
 #include <QSettings>
 #include <QDir>
 #include <QLocale>
@@ -223,7 +226,17 @@ static QLocale localeFromCode(const QString& code) {
 
 bool GeoCoinApplication::setLanguage(const QString &languageCode)
 {
+#ifdef GEOCOIN_NATIVE_MACOS
+    // Accept plain codes ("ru") and locale specs ("ru_RU.UTF-8"); GEOCOIN_LANG
+    // is the environment fallback when QSettings 'ui/language' is unset.
+    QString code = languageCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        code = QString::fromLocal8Bit(qgetenv("GEOCOIN_LANG")).trimmed().toLower();
+    }
+    code = code.split('_').value(0).split('.').value(0);
+#else
     const QString code = languageCode.trimmed().toLower();
+#endif
     if (code == currentLanguage_) {
         return true;
     }
@@ -274,7 +287,11 @@ bool GeoCoinApplication::setLanguage(const QString &languageCode)
 void GeoCoinApplication::applyLanguageFromSettings()
 {
     QSettings settings;
+#ifdef GEOCOIN_NATIVE_MACOS
+    const QString code = settings.value(QStringLiteral("ui/language")).toString();
+#else
     const QString code = settings.value(QStringLiteral("ui/language"), QStringLiteral("en")).toString();
+#endif
     setLanguage(code);
 }
 
@@ -289,6 +306,12 @@ void GeoCoinApplication::createWindow(const NetworkStyle *networkStyle)
     pollTimer->setTimerType(Qt::CoarseTimer);
 
     // Показываем окно сразу: пользователь видит инициализацию в реальном времени.
+#ifdef GEOCOIN_NATIVE_MACOS
+    if (platformName() == QStringLiteral("cocoa")) {
+        nativeFrontend = std::make_unique<GeoCoinNativeFrontend>(*this, *window, dataDirectory, network_);
+        return;
+    }
+#endif
     window->show();
 }
 
@@ -364,6 +387,9 @@ void GeoCoinApplication::requestShutdown()
         timer->disconnect();
     }
     if (window) window->beginShutdown();
+#ifdef GEOCOIN_NATIVE_MACOS
+    if (nativeFrontend) nativeFrontend->beginShutdown();
+#endif
     if (walletModel) walletModel->beginQuiesce();
 
     shutdownPollTimer_ = new QTimer(this);
@@ -391,6 +417,9 @@ void GeoCoinApplication::requestShutdown()
         shutdownPollTimer_->stop();
         // Pages, timer closures and models can all own node/DB services.
         // Destroy them before the core, and join the core before returning main.
+#ifdef GEOCOIN_NATIVE_MACOS
+        nativeFrontend.reset();
+#endif
         delete window;
         window = nullptr;
         delete walletModel;
@@ -409,11 +438,23 @@ void GeoCoinApplication::runGuiSmokeTest()
     if (shutdownRequested) return;
     writeSmokeTrace(QStringLiteral("runGuiSmokeTest entered"));
     QString error;
+#ifdef GEOCOIN_NATIVE_MACOS
+    writeSmokeTrace(QStringLiteral("runGuiSmokeTest branch=%1")
+                        .arg(property("geocoinUiLayoutTest").toBool() ? "layout" : "smoke"));
+#endif
     if (!window) {
         returnValue = 1;
         qCritical() << "GeoCoin GUI smoke test failed: main window was not created";
         writeSmokeTrace(QStringLiteral("runGuiSmokeTest failed: no window"));
-    } else if (!(property("geocoinUiLayoutTest").toBool()
+    }
+#ifdef GEOCOIN_NATIVE_MACOS
+    else if (nativeFrontend) {
+        returnValue = nativeFrontend->runSmokeChecks(property("geocoinUiLayoutTest").toBool(), &error) ? 0 : 1;
+        if (returnValue) qCritical() << "GeoCoin AppKit GUI smoke test failed:" << error;
+        else qInfo() << "GeoCoin AppKit GUI smoke test passed";
+    }
+#endif
+    else if (!(property("geocoinUiLayoutTest").toBool()
                      ? window->runLayoutChecks(&error)
                      : window->runSmokeChecks(&error))) {
         returnValue = 1;
@@ -910,6 +951,10 @@ void GeoCoinApplication::initializeResult(bool success, const QString &error)
         // Set models in window (window is already visible)
         window->setClientModel(clientModel);
         window->setWalletModel(walletModel);
+#ifdef GEOCOIN_NATIVE_MACOS
+        if (nativeFrontend) nativeFrontend->setModels(clientModel, walletModel);
+        else
+#endif
         connect(clientModel, &ClientModel::message, window, [this](const QString& title, const QString& text, unsigned int) {
             if (shutdownRequested || !window) return;
             auto* message = new QMessageBox(QMessageBox::Warning, title, text, QMessageBox::Ok, window);
@@ -974,6 +1019,27 @@ void GeoCoinApplication::pollNodeStatus()
             statusFailureReported_ = false;
             clientModel->updateStatus(status);
             walletModel->pollBalanceChanged();
+#ifdef GEOCOIN_NATIVE_MACOS
+            auto reportProgress = [this](double progress, int current, int target) {
+                if (nativeFrontend) {
+                    nativeFrontend->setSyncProgress(progress, current, target);
+                    return;
+                }
+                window->setSyncProgress(progress, current, target);
+            };
+            if (status.syncing && status.target_height > 0) {
+                reportProgress(static_cast<double>(status.current_height) / status.target_height,
+                               status.current_height, status.target_height);
+            } else {
+                int current = 0;
+                int target = 0;
+                if (walletModel->getRescanProgress(current, target)) {
+                    reportProgress(target > 0 ? static_cast<double>(current) / target : 0.0, current, target);
+                } else {
+                    reportProgress(1.0, status.current_height, status.current_height);
+                }
+            }
+#else
             if (status.syncing && status.target_height > 0) {
                 window->setSyncProgress(static_cast<double>(status.current_height) / status.target_height,
                     status.current_height, status.target_height);
@@ -986,6 +1052,7 @@ void GeoCoinApplication::pollNodeStatus()
                     window->setSyncProgress(1.0, status.current_height, status.current_height);
                 }
             }
+#endif
         } else if (statusPollAction_.failed() && !statusFailureReported_) {
             statusFailureReported_ = true;
             emit clientModel->message(tr("Node Status"), tr("Status refresh failed [status_read_failed]. The last snapshot is retained; refresh will retry."), 2);

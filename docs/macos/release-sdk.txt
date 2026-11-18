@@ -1,0 +1,9 @@
+GeoCoin C SDK для macOS / GeoCoin C SDK for macOS
+
+Apple Silicon, macOS 14.0+.
+
+Подключите include/libgeo/libgeo.h и lib/libgeo.dylib. При распространении
+приложения храните зависимости libgeo из каталога lib рядом с libgeo.dylib.
+
+Use include/libgeo/libgeo.h and link lib/libgeo.dylib. Keep the bundled
+dependencies in the same directory as libgeo.dylib when distributing a client.

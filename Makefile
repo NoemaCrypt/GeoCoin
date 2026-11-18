@@ -2,6 +2,9 @@
 
 all: help
 
+ifneq ($(OS),Windows_NT)
+UNAME := $(shell uname -s)
+endif
 ifeq ($(OS),Windows_NT)
 WSL_DISTRO ?= Ubuntu-22.04
 WINDOWS_PS := powershell -ExecutionPolicy Bypass -File
@@ -16,10 +19,19 @@ portable-windows:
 portable-linux:
 	wsl -d $(WSL_DISTRO) -- bash -lc 'set -euo pipefail; cd "$$(wslpath -a "$(CURDIR)")"; tmp="$$(mktemp scripts/package_portable_linux.XXXXXX.sh)"; tr -d "\r" < scripts/package_portable_linux.sh > "$$tmp"; chmod +x "$$tmp"; "$$tmp"; rm -f "$$tmp"'
 else
+ifeq ($(UNAME),Darwin)
+NODE_PRESET ?= macos-release-headless
+NODE_BUILD_DIR ?= out/build/macos-release
+NODE_BUILD_CONFIG ?=
+NODE_BIN ?= $(NODE_BUILD_DIR)/geocoin-node
+GUI_PRESET ?= macos-arm64-release
+BUNDLE_PROFILE ?= user
+else
 NODE_PRESET ?= linux-release-headless
 NODE_BUILD_DIR ?= out/build/linux-release
 NODE_BUILD_CONFIG ?=
 NODE_BIN ?= $(NODE_BUILD_DIR)/geocoin-node
+endif
 
 portable-windows:
 	@echo "Run portable-windows from a Windows host with PowerShell."
@@ -31,9 +43,41 @@ portable-linux:
 	chmod +x "$$tmp"; \
 	"$$tmp"; \
 	rm -f "$$tmp"
+ifeq ($(UNAME),Darwin)
+
+.PHONY: build-macos portable-macos portable-macos-profile
+build-macos:
+	cmake --preset $(GUI_PRESET) -S .
+	cmake --build --preset $(GUI_PRESET) --parallel
+
+.PHONY: build-macos-sdk
+build-macos-sdk:
+	cmake --preset macos-arm64-release -S libgeo
+	cmake --build libgeo/out/build/macos-arm64-release --parallel
+
+portable-macos: build-macos
+	GEO_BUILD_DIR="$(CURDIR)/out/build/$(GUI_PRESET)" bash scripts/package_portable_macos.sh --profile "$(BUNDLE_PROFILE)"
+
+ifeq ($(BUNDLE_PROFILE),sdk)
+portable-macos: build-macos-sdk
 endif
 
+# make portable-macos-profile=user — profile-specific bundle (user|admin|sdk).
+# GNU Make 3.81 parses the '=' form as a variable assignment; the plain
+# portable-macos-profile goal is the goal users get when typing that name.
+portable-macos-profile:
+	@$(MAKE) portable-macos BUNDLE_PROFILE="$${portable_macos_profile:-user}"
+endif
+endif
+
+ifeq ($(UNAME),Darwin)
+portable-all: build-macos build-macos-sdk
+	@set -e; for profile in user admin sdk; do \
+		GEO_BUILD_DIR="$(CURDIR)/out/build/$(GUI_PRESET)" bash scripts/package_portable_macos.sh --profile "$$profile"; \
+	done
+else
 portable-all: portable-windows portable-linux
+endif
 
 static-windows: portable-windows
 static-linux: portable-linux
@@ -127,7 +171,12 @@ help:
 	@echo "  make rocksdb-pruned-node - Build/start Pruned node with RocksDB chainstate"
 	@echo "  make portable-windows   - Build/package true static Windows bundle"
 	@echo "  make portable-linux     - Build/package self-contained Linux bundle"
+ifeq ($(UNAME),Darwin)
+	@echo "  make portable-macos     - Build/package self-contained macOS arm64 bundle"
+	@echo "  make portable-all       - Build user, admin and SDK bundles on macOS"
+else
 	@echo "  make portable-all       - Build/package both bundles"
+endif
 	@echo "  make static-windows     - Alias for portable-windows"
 	@echo "  make static-linux       - Alias for portable-linux"
 	@echo "  make static-all         - Alias for portable-all"
@@ -144,3 +193,6 @@ help:
 	@echo "Windows release uses ClangCL + vcpkg x64-windows-static-release."
 	@echo "The Windows package must not contain project/Qt/OpenSSL/Curl DLLs."
 	@echo "Linux release remains a portable Ubuntu 22.04 bundle with runtime deps included."
+ifeq ($(UNAME),Darwin)
+	@echo "macOS release targets Apple Silicon on macOS 14+. Run bash scripts/bootstrap-macos.sh --profile release first."
+endif

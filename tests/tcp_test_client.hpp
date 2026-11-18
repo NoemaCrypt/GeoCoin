@@ -113,6 +113,24 @@ inline bool make_test_socket_pair(int (&fds)[2]) {
         return false;
     }
     return true;
+#elif defined(GEOCOIN_MACOS_ARM64)
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+        return false;
+    }
+    // macOS stream AF_UNIX buffers default to ~8 KiB, far below Linux's
+    // ~212 KiB, so single sends of 24 KB+ frames stall on EAGAIN. Ask for a
+    // roomier pair of buffers (macOS doubles the requested size).
+    int buffer_size = 256 * 1024;
+    for (int fd : fds) {
+        if (::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer_size, sizeof(buffer_size)) != 0 ||
+            ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size)) != 0) {
+            close_test_socket(fds[0]);
+            close_test_socket(fds[1]);
+            fds[0] = fds[1] = -1;
+            return false;
+        }
+    }
+    return true;
 #else
     return ::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0;
 #endif

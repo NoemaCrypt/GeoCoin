@@ -17,6 +17,9 @@ class WalletModel;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
+#ifdef GEOCOIN_NATIVE_MACOS
+class GeoMiningStatusLabel;
+#endif
 class QPushButton;
 class QSpinBox;
 class QCheckBox;
@@ -48,11 +51,21 @@ public:
     void waitForPendingMiningStop();
     void applyTheme();
     bool runProcessLifecycleChecks(const QString& fixture, QString* error);
+#ifdef GEOCOIN_NATIVE_MACOS
+    bool requestNativeCpuMining(int threads, QString* error);
+    bool startNativeGpuMining(const QString& backend, const QStringList& devices, int intensity, QString* error);
+    QString nativeGpuMiningStatus() const;
+    QString nativeGpuBackend() const { return activeNativeGpuBackend; }
+    bool isNativeGpuMiningStopping() const { return (gpuStopRequested || gpuSessionFinalizing) && !gpuCleanupFailed; }
+#endif
 
 signals:
     void gpuMiningChanged(bool enabled, double hashrate, int acceptedBlocks, int rejectedBlocks);
     void gpuMiningStopped();
     void gpuCleanupError(const QString& error);
+#ifdef GEOCOIN_NATIVE_MACOS
+    void nativeGpuStatusChanged(const QString& status);
+#endif
 
 public slots:
     void updateMiningInfo(bool enabled, int threads, double hashrate, quint64 minedBlocksAccepted);
@@ -80,7 +93,11 @@ private:
     QLabel *labelGpuHashrate;
     QLabel *labelGpuAccepted;
     QLabel *labelGpuRejected;
+#ifdef GEOCOIN_NATIVE_MACOS
+    GeoMiningStatusLabel *labelGpuStatus;
+#else
     QLabel *labelGpuStatus;
+#endif
     QProcess *gpuDeviceProbe;
     QProcess *gpuMinerProcess;
     QTimer *miningStopPollTimer;
@@ -113,6 +130,9 @@ private:
     bool gpuTerminateSent = false;
     bool gpuKillSent = false;
     QString gpuLastError;
+#ifdef GEOCOIN_NATIVE_MACOS
+    QString activeNativeGpuBackend;
+#endif
     QByteArray gpuOutputBuffer;
     QByteArray gpuErrorBuffer;
 
@@ -120,12 +140,19 @@ private:
     void showStyledMessageBox(int icon, const QString &title, const QString &text);
     QString gpuMinerBinaryPath() const;
     QString selectedGpuBackend() const;
+#ifdef GEOCOIN_NATIVE_MACOS
+    int selectedGpuDeviceRole() const;
+#endif
     QStringList selectedGpuDeviceIds() const;
     void setGpuBackendAvailability(bool hasCuda, bool hasHip, bool hasOpenCl);
     void updateGpuDeviceItemsForBackend(bool checkAvailable);
     bool startPrivateGpuRpc(QString *error);
     void stopPrivateGpuRpc();
     void setGpuMiningUi(bool running);
+#ifdef GEOCOIN_NATIVE_MACOS
+    bool requestCpuMining(int threads, bool stopping, QString* error);
+    bool startGpuMiningSession(const QString& backend, const QStringList& devices, int intensity, QString* error);
+#endif
     void processGpuStatsLine(const QByteArray& line);
     void updateOverallMiningDisplay();
     void createGpuMinerProcess();

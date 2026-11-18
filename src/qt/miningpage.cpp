@@ -193,9 +193,20 @@ void MiningPage::setupUi()
     QHBoxLayout *gpuBackendLayout = new QHBoxLayout();
     gpuBackendLayout->setContentsMargins(0, 0, 0, 0);
     gpuBackendLayout->setSpacing(10);
+#ifdef GEOCOIN_NATIVE_MACOS
+    // These slots represent Auto and Metal in the Apple Silicon build.
+    checkGpuCuda = new QCheckBox(tr("Auto"), this);
+    checkGpuHip = new QCheckBox(tr("Metal"), this);
+    checkGpuCuda->setObjectName(QStringLiteral("gpuBackendAuto"));
+    checkGpuHip->setObjectName(QStringLiteral("gpuBackendMetal"));
+#else
     checkGpuCuda = new QCheckBox(tr("NVIDIA CUDA"), this);
     checkGpuHip = new QCheckBox(tr("AMD HIP"), this);
+#endif
     checkGpuOpenCl = new QCheckBox(tr("OpenCL"), this);
+#ifdef GEOCOIN_NATIVE_MACOS
+    checkGpuOpenCl->setObjectName(QStringLiteral("gpuBackendOpenCL"));
+#endif
     checkGpuCuda->setCursor(Qt::PointingHandCursor);
     checkGpuHip->setCursor(Qt::PointingHandCursor);
     checkGpuOpenCl->setCursor(Qt::PointingHandCursor);
@@ -258,7 +269,11 @@ void MiningPage::setupUi()
     labelGpuHashrate = new QLabel(tr("0 H/s"), this);
     labelGpuAccepted = new QLabel(tr("0"), this);
     labelGpuRejected = new QLabel(tr("0"), this);
+#ifdef GEOCOIN_NATIVE_MACOS
+    labelGpuStatus = new GeoMiningStatusLabel(tr("Not running"), this);
+#else
     labelGpuStatus = new QLabel(tr("Not running"), this);
+#endif
     labelGpuStatus->setWordWrap(true);
     gpuStatusLayout->addRow(tr("GPU Hashrate:"), labelGpuHashrate);
     gpuStatusLayout->addRow(tr("Accepted Blocks:"), labelGpuAccepted);
@@ -524,6 +539,75 @@ void MiningPage::showStyledMessageBox(int icon, const QString &title, const QStr
     GUIUtil::showStyledMessageBox(this, static_cast<QMessageBox::Icon>(icon), title, text);
 }
 
+#ifdef GEOCOIN_NATIVE_MACOS
+void MiningPage::toggleMining()
+{
+    if (miningActionInProgress) return;
+    QString error;
+    if (!requestCpuMining(spinThreads->value(), miningEnabled, &error)) {
+        showStyledMessageBox(!walletModel || !walletModel->isWalletLoaded() || !clientModel ? 2 : 3,
+                             tr("Mining"), error);
+    }
+}
+
+bool MiningPage::requestNativeCpuMining(int threads, QString* error)
+{
+    if (miningActionInProgress) {
+        *error = tr("CPU mining shutdown is in progress.");
+        return false;
+    }
+    if (threads < 0 || threads > spinThreads->maximum()) {
+        *error = tr("Choose between 1 and %1 CPU threads.").arg(spinThreads->maximum());
+        return false;
+    }
+    if (threads > 0 && !miningEnabled) spinThreads->setValue(threads);
+    return requestCpuMining(threads, threads == 0, error);
+}
+
+bool MiningPage::requestCpuMining(int threads, bool stopping, QString* error)
+{
+    if (!walletModel || !walletModel->isWalletLoaded()) {
+        *error = tr("Please load or create a wallet before mining.");
+        return false;
+    }
+    if (!clientModel) {
+        *error = tr("Client model not initialized");
+        return false;
+    }
+
+    auto mining = clientModel->getMiningControl();
+    if (!mining) {
+        *error = tr("Node not initialized");
+        return false;
+    }
+
+    if (stopping) {
+        // Joining CPU workers can block the UI, so use one owned background
+        // action. The page and application shutdown both wait for it.
+        miningActionInProgress = true;
+        buttonStartStop->setEnabled(false);
+        spinThreads->setEnabled(false);
+        if (!miningStopAction.start([mining]() {
+            mining->stop_mining();
+        })) {
+            miningActionInProgress = false;
+            buttonStartStop->setEnabled(true);
+            *error = tr("Failed to schedule mining shutdown.");
+            return false;
+        }
+        miningStopPollTimer->start();
+    } else {
+        geocoin::Address mining_address(walletModel->getAddress().toStdString());
+
+        if (!mining->start_mining(threads, mining_address)) {
+            *error = tr("Failed to start mining. Check that wallet is loaded and node is running.");
+            return false;
+        }
+    }
+    return true;
+}
+
+#else
 void MiningPage::toggleMining()
 {
     if (miningActionInProgress) {
@@ -573,6 +657,8 @@ void MiningPage::toggleMining()
         }
     }
 }
+
+#endif
 
 void MiningPage::pollMiningStop()
 {

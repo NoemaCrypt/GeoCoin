@@ -5,6 +5,7 @@ import argparse
 import ctypes
 import os
 from pathlib import Path
+import sys
 
 
 def main():
@@ -15,7 +16,10 @@ def main():
     directory = bundle / ("bin" if os.name == "nt" else "lib")
     dll_directory = os.add_dll_directory(str(directory)) if os.name == "nt" else None
     try:
-        sdk = ctypes.CDLL(str(directory / ("geo.dll" if os.name == "nt" else "libgeo.so")))
+        if sys.platform == "darwin":
+            sdk = ctypes.CDLL(str(directory / "libgeo.dylib"))
+        else:
+            sdk = ctypes.CDLL(str(directory / ("geo.dll" if os.name == "nt" else "libgeo.so")))
         sdk.geo_api_version.restype = ctypes.c_uint32
         if sdk.geo_api_version() != 1:
             raise RuntimeError("Unexpected C SDK API version")

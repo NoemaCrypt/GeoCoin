@@ -163,9 +163,80 @@
         "LIBGEO_BUILD_SHARED": "ON",
         "LIBGEO_BUILD_STATIC": "OFF"
       }
+    },
+    {
+      "name": "macos-release-base",
+      "displayName": "libgeo macOS Release Base",
+      "description": "Hidden base for Apple Silicon release builds (Homebrew deps, no vcpkg)",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/macos-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/boost;/opt/homebrew/opt/openssl@3",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "macos-debug-base",
+      "displayName": "libgeo macOS Debug Base",
+      "description": "Hidden base for Apple Silicon debug builds (Homebrew deps, no vcpkg)",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/macos-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/boost;/opt/homebrew/opt/openssl@3",
+        "LIBGEO_BUILD_SHARED": "ON",
+        "LIBGEO_BUILD_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "macos-arm64-release",
+      "displayName": "libgeo macOS 14+ arm64 Release",
+      "inherits": "macos-release-base",
+      "binaryDir": "${sourceDir}/out/build/macos-arm64-release",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/../out/macos-deps/installed/arm64-osx-geocoin",
+        "CMAKE_FIND_USE_PACKAGE_REGISTRY": "OFF",
+        "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY": "OFF",
+        "CMAKE_EXE_LINKER_FLAGS": "-Wl,-headerpad_max_install_names",
+        "CMAKE_SHARED_LINKER_FLAGS": "-Wl,-headerpad_max_install_names",
+        "OPENSSL_ROOT_DIR": "${sourceDir}/../out/macos-deps/installed/arm64-osx-geocoin",
+        "CMAKE_IGNORE_PREFIX_PATH": "/opt/homebrew;/usr/local"
+      }
+    },
+    {
+      "name": "macos-release",
+      "displayName": "libgeo macOS Release",
+      "description": "Reproducible macOS arm64 release build for the C SDK",
+      "inherits": "macos-release-base"
+    },
+    {
+      "name": "macos-debug",
+      "displayName": "libgeo macOS Debug",
+      "description": "Debug-friendly macOS arm64 build for the C SDK",
+      "inherits": "macos-debug-base"
     }
   ],
   "buildPresets": [
+    {
+      "name": "macos-arm64-release",
+      "configurePreset": "macos-arm64-release"
+    },
     {
       "name": "linux-release",
       "configurePreset": "linux-release"
@@ -198,6 +269,14 @@
       "name": "windows-clang-debug",
       "configurePreset": "windows-clang-debug",
       "configuration": "Debug"
+    },
+    {
+      "name": "macos-release",
+      "configurePreset": "macos-release"
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos-debug"
     }
   ]
 }

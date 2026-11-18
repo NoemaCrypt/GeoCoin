@@ -55,6 +55,17 @@ int main(int argc, char** argv) {
             });
             probe.join();
             check(error.empty(), error.c_str());
+#elif defined(GEOCOIN_MACOS_ARM64)
+            std::string error;
+            std::thread probe([&] {
+                if (bind_cpu_mining_worker(before, before.capacity() - 1, error)) restricted = cpu_mining_topology();
+            });
+            probe.join();
+            check(error.empty(), error.c_str());
+            check(restricted.error.empty() && restricted.capacity() == before.capacity(),
+                  "Darwin QoS does not simulate a per-CPU affinity mask");
+            std::cout << "test_cpu_topology: Darwin worker QoS preserves OS CPU capacity\n";
+            return 0;
 #else
             restricted = cpu_mining_topology();
 #endif
@@ -140,6 +151,10 @@ int main(int argc, char** argv) {
         const auto topology = cpu_mining_topology();
         check(topology.error.empty(), topology.error.c_str());
         check(topology.capacity() > 0, "OS topology is nonempty");
+#if defined(GEOCOIN_MACOS_ARM64)
+        const auto active = detail::apple_sysctl_count("hw.activecpu");
+        if (active > 0) check(topology.capacity() == static_cast<size_t>(active), "every active Darwin CPU is available");
+#endif
         check(cpu_mining_thread_limit() == topology.capacity(), "shared limit uses OS topology");
         check(clamp_cpu_mining_threads(0) == 1, "zero request retains one-worker compatibility");
         check(clamp_cpu_mining_threads(topology.capacity() + 1024) == topology.capacity(), "request clamps to OS capacity");

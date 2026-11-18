@@ -4,16 +4,25 @@
 #include "geocoin/chain/block_index.hpp"
 #include "geocoin/core/blockchain.hpp"
 #include "geocoin/state/state.hpp"
+#if defined(GEOCOIN_MACOS_ARM64)
+#include "geocoin/storage/block_records.hpp"
+#endif
 #include "geocoin/storage/block_storage.hpp"
 #include "geocoin/utils/metrics.hpp"
 
 #include <algorithm>
 #include <chrono>
+#if defined(GEOCOIN_MACOS_ARM64)
+#include <exception>
+#endif
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#if defined(GEOCOIN_MACOS_ARM64)
+#include <thread>
+#endif
 
 namespace geocoin::core {
 
@@ -1065,6 +1074,75 @@ void test_restart_rejects_missing_or_mismatched_consensus_ruleset()
     }
 }
 
+#if defined(GEOCOIN_MACOS_ARM64)
+void test_restart_rebuilds_deep_header_chain_on_worker_thread()
+{
+    using StorageAccess = geocoin::storage::BlockStorageTestAccess;
+    constexpr geocoin::Height tip_height = 8192;
+    TempDir dir("geocoin-blockchain-deep-index");
+    auto storage = std::make_shared<geocoin::storage::BlockStorage>(dir.path().string());
+    expect(storage->is_open(), "deep index storage opens");
+    auto state = std::make_shared<geocoin::state::ChainState>(
+        std::make_unique<geocoin::state::MemoryStorage>());
+    state->set_block_storage(storage);
+
+    geocoin::Hash256 tip_hash{};
+    {
+        geocoin::core::Blockchain blockchain(state, storage);
+        expect(blockchain.initialize(), "initialize deep index genesis");
+        expect(blockchain.get_active_block_hash_by_height(0, tip_hash), "read deep index genesis");
+    }
+
+    geocoin::Hash256 lowest_hash;
+    lowest_hash.fill(0xff);
+    for (geocoin::Height height = 1; height <= tip_height; ++height) {
+        geocoin::core::BlockHeader header;
+        header.prev_block_hash = tip_hash;
+        header.bits = geocoin::consensus::ProofOfWork::get_initial_bits();
+        header.nonce = height;
+        tip_hash = header.get_hash();
+        if (height == tip_height) {
+            // Visit the tip before the other unresolved headers in hash order.
+            const auto nonce_limit = header.nonce + 1'000'000;
+            while (tip_hash >= lowest_hash && header.nonce < nonce_limit) {
+                ++header.nonce;
+                tip_hash = header.get_hash();
+            }
+            expect(tip_hash < lowest_hash, "deep tip sorts first among unresolved headers");
+        }
+        lowest_hash = std::min(lowest_hash, tip_hash);
+        // Deliberately store an incorrect height. Only Genesis has a body.
+        const auto encoded = geocoin::storage::encode_block_index_record(header, 1);
+        const std::string value(encoded.begin(), encoded.end());
+        expect(StorageAccess::put(*storage, StorageAccess::block_index_key(*storage, tip_hash), value, false),
+               "persist deep header-only index record");
+    }
+    storage->close();
+
+    std::exception_ptr failure;
+    std::thread worker([&]() {
+        try {
+            auto reopened = std::make_shared<geocoin::storage::BlockStorage>(dir.path().string());
+            expect(reopened->is_open(), "deep index storage reopens");
+            auto restarted_state = std::make_shared<geocoin::state::ChainState>(
+                std::make_unique<geocoin::state::MemoryStorage>());
+            restarted_state->set_block_storage(reopened);
+            geocoin::core::Blockchain blockchain(restarted_state, reopened);
+            expect(blockchain.initialize(), "worker restores deep index");
+            const auto* tip = blockchain.find_block_index(tip_hash);
+            expect(tip && tip->height == tip_height, "deep tip height reconstructed from parents");
+            expect(blockchain.get_height() == 0, "headers alone do not advance the active chain");
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    });
+    worker.join();
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+}
+
+#endif
 void test_restart_rejects_orphan_block_index_record()
 {
     TempDir dir("geocoin-blockchain-orphan-index-record");
@@ -2189,6 +2267,9 @@ int main()
         test_restart_rewrites_incomplete_active_chain_index();
         test_restart_loads_legacy_body_only_block_records();
         test_restart_rejects_missing_or_mismatched_consensus_ruleset();
+#if defined(GEOCOIN_MACOS_ARM64)
+        test_restart_rebuilds_deep_header_chain_on_worker_thread();
+#endif
         test_restart_rejects_orphan_block_index_record();
         test_restart_rejects_compacted_pruned_index_without_snapshot();
         test_restart_rejects_wrong_genesis_datadir();
