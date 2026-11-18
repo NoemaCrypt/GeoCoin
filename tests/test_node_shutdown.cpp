@@ -226,9 +226,12 @@ void network_bootstrap_plans() {
             check(plan.default_seed_nodes == std::vector<std::string>{
                       "45.12.114.4:3030", "188.130.154.62:3030",
                       "217.60.37.56:3030", "31.58.79.166:3030",
+#ifndef GEOCOIN_MACOS_ARM64
                       "seed1.geocoin.network:3030", "seed2.geocoin.network:3030",
-                      "seed3.geocoin.network:3030", "seed4.geocoin.network:3030"},
-                  label + "bootstrap uses all verified fixed and DNS mainnet endpoints");
+                      "seed3.geocoin.network:3030", "seed4.geocoin.network:3030",
+#endif
+                  },
+                  label + "bootstrap keeps the verified mainnet endpoints for this platform");
         }
         const std::string local = "127.0.0.1:" + std::to_string(consensus::Params().default_port());
         check(!plan.base_priority_targets.empty() &&

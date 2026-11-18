@@ -27,6 +27,7 @@
 @property (nonatomic, strong) NSTextField* blocksLabel;
 @property (nonatomic, strong) NSProgressIndicator* progressBar;
 @property (nonatomic, strong) NSTextField* progressLabel;
+@property (nonatomic, strong) GeoPillButton* historyWarning;
 @property (nonatomic, strong) NSTextField* hashrateLabel;
 @property (nonatomic, strong) NSMutableDictionary<NSString*, NSImage*>* artwork;
 @property (nonatomic, strong) id themeObserver;
@@ -198,6 +199,22 @@
     self.progressLabel = GeoMakeLabel(@"", nil, 11);
     self.progressLabel.hidden = YES;
 
+    __weak GeoCoinMainWindowController* weakSelf = self;
+    self.historyWarning = GeoMakePill(@"", ^{
+        GeoCoinMainWindowController* controller = weakSelf;
+        if (controller.core.onMessage && controller.historyWarning.toolTip.length > 0) {
+            controller.core.onMessage([controller localized:@"Wallet history is incomplete"],
+                                      controller.historyWarning.toolTip, 2);
+        }
+    });
+    self.historyWarning.identifier = @"wallet-history-warning";
+    self.historyWarning.image = [NSImage imageWithSystemSymbolName:@"exclamationmark.triangle.fill"
+                                        accessibilityDescription:nil];
+    self.historyWarning.imagePosition = NSImageOnly;
+    self.historyWarning.hidden = YES;
+    [self.historyWarning.widthAnchor constraintEqualToConstant:28].active = YES;
+    [self.historyWarning.heightAnchor constraintEqualToConstant:26].active = YES;
+
     NSView* spacer = [NSView new];
     [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow
                        forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -214,6 +231,7 @@
     [row addArrangedSubview:self.hashrateLabel];
     [row addArrangedSubview:self.progressBar];
     [row addArrangedSubview:self.progressLabel];
+    [row addArrangedSubview:self.historyWarning];
     [row addArrangedSubview:spacer];
     [row addArrangedSubview:self.themeButton];
     return row;
@@ -469,6 +487,13 @@
     self.core.onWalletInfo = ^(NSString* name, NSInteger walletId, BOOL loaded, BOOL pruned) {
         [weakSelf updateWindowTitle];
         [weakSelf.overview setWalletName:name loaded:loaded];
+    };
+    self.core.onWalletHistoryError = ^(NSString* error) {
+        GeoPillButton* warning = weakSelf.historyWarning;
+        warning.toolTip = error.length > 0 ? error : nil;
+        warning.hidden = error.length == 0;
+        [warning setAccessibilityLabel:[weakSelf localized:@"Wallet history is incomplete"]];
+        [warning setAccessibilityHelp:warning.toolTip];
     };
     self.core.onMessage = ^(NSString* title, NSString* message, NSUInteger style) {
         NSWindow* window = weakSelf.window;

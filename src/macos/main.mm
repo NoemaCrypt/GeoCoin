@@ -9,6 +9,7 @@
 #include "guiutil.h"
 #include "intro.h"
 #include "walletframe.h"
+#include "walletmodel.h"
 
 #include <QAbstractButton>
 #include <QButtonGroup>
@@ -343,6 +344,7 @@ GeoCoinNativeFrontend::GeoCoinNativeFrontend(GeoCoinApplication& app, GeoCoinGUI
     }
     impl_->shell = [[GeoCoinMainWindowController alloc] initWithCore:impl_->bridge];
     impl_->workflows = &workflows;
+    workflows.setNativeWorkflowsHosted();
     GeoCoinMainWindowController* shell = impl_->shell;
     shell.titleAddText = network == QStringLiteral("degree") ? @"" : network.toNSString();
 
@@ -488,6 +490,23 @@ bool GeoCoinNativeFrontend::runSmokeChecks(bool layout, QString* error)
     for (NSWindow* other in NSApp.windows) {
         if (other != window && other.isVisible && other.canBecomeMainWindow) {
             *error = QStringLiteral("A second Core window became visible");
+            return false;
+        }
+    }
+    if (layout) {
+        WalletModel fixture;
+        WalletModel* originalWallet = impl_->bridge.walletModel;
+        impl_->workflows->setWalletModel(&fixture);
+        [impl_->bridge setWalletModel:&fixture];
+        Q_EMIT fixture.walletHistoryError(QStringLiteral("Test wallet history warning"));
+        QCoreApplication::processEvents();
+        const bool visibleDialog = impl_->workflows->isVisible() ||
+            QApplication::activeModalWidget() != nullptr || window.attachedSheet != nil;
+        Q_EMIT fixture.walletHistoryError(QString());
+        impl_->workflows->setWalletModel(originalWallet);
+        [impl_->bridge setWalletModel:originalWallet];
+        if (visibleDialog || impl_->workflows->close() || !window.isVisible) {
+            *error = QStringLiteral("Wallet history warnings must stay in the AppKit window");
             return false;
         }
     }

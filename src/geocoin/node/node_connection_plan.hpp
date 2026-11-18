@@ -21,6 +21,10 @@ struct PeerBootstrapPlan {
 
 bool is_self_endpoint(const std::string& endpoint, int self_check_port);
 
+#ifdef GEOCOIN_MACOS_ARM64
+std::vector<std::string> bootstrap_numeric_seeds(bool use_testnet);
+#endif
+
 PeerBootstrapPlan build_peer_bootstrap_plan(
     const NodeConfig& config,
     bool connect_only_mode,

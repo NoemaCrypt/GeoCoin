@@ -47,9 +47,16 @@ WalletScanResult Wallet::scan_blockchain(std::shared_ptr<state::ChainState> chai
     }
 
     constexpr Height kScanBatchSize = 1000;
-    result.target_height = chain_state->get_height();
     Hash256 target_hash{};
-    if (!chain_state->get_active_block_hash(result.target_height, target_hash)) {
+#ifdef GEOCOIN_MACOS_ARM64
+    // The UTXO height can advance before connect_tip publishes the active index.
+    // Read the height and hash from the same committed record.
+    const bool have_scan_tip = chain_state->get_committed_active_tip(target_hash, result.target_height);
+#else
+    result.target_height = chain_state->get_height();
+    const bool have_scan_tip = chain_state->get_active_block_hash(result.target_height, target_hash);
+#endif
+    if (!have_scan_tip) {
         result.status = WalletScanStatus::READ_ERROR;
         result.error = "Cannot read the active chain for wallet history scanning.";
         return finish();

@@ -61,6 +61,7 @@ public:
     bool minersStopped();
     void openWalletPath(const QString& filename, const QString& password = QString());
 #ifdef GEOCOIN_NATIVE_MACOS
+    void setNativeWorkflowsHosted() { nativeWorkflowsHosted_ = true; }
     void invokeNativeMenuAction(const QString& command);
     void syncNativeTheme(const QString& theme);
     void refreshNativeLanguage();
@@ -85,6 +86,9 @@ private:
     QString lastVisitedPage_;
     QString titleAddText_;
     QString lastWalletHistoryError_;
+#ifdef GEOCOIN_NATIVE_MACOS
+    bool nativeWorkflowsHosted_ = false;
+#endif
     bool closing_ = false;
     bool walletTransition_ = false;
     bool walletTransitionFinalizing_ = false;

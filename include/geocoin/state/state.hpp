@@ -556,6 +556,9 @@ public:
     bool get_block_by_height(Height height, core::Block& block) const;
 
     bool get_active_block_hash(Height height, Hash256& hash) const;
+#ifdef GEOCOIN_MACOS_ARM64
+    bool get_committed_active_tip(Hash256& hash, Height& height) const;
+#endif
     bool is_block_body_pruned(Height height) const;
 
     /**

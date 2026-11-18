@@ -99,6 +99,7 @@ static void Disconnect(std::vector<QMetaObject::Connection>& connections)
     if (_walletModel == model) return;
     Disconnect(_walletConnections);
     _walletModel = model;
+    if (self.onWalletHistoryError) self.onWalletHistoryError(model ? GeoString(model->getHistoryScanError()) : @"");
     if (!model) return;
     __weak GeoCoinCoreBridge* bridge = self;
     _walletConnections.push_back(QObject::connect(model, &WalletModel::balanceChanged, model,
@@ -118,10 +119,15 @@ static void Disconnect(std::vector<QMetaObject::Connection>& connections)
             if (notify) notify();
         }));
     _walletConnections.push_back(QObject::connect(model, &WalletModel::walletLoadedChanged, model,
-        [bridge](bool) {
+        [bridge, model](bool) {
+            if (bridge.onWalletHistoryError) bridge.onWalletHistoryError(GeoString(model->getHistoryScanError()));
             [bridge notifyWallet];
             [bridge notifyAddress];
             [bridge refreshBalances];
+        }));
+    _walletConnections.push_back(QObject::connect(model, &WalletModel::walletHistoryError, model,
+        [bridge](const QString& error) {
+            if (bridge.onWalletHistoryError) bridge.onWalletHistoryError(GeoString(error));
         }));
     _walletConnections.push_back(QObject::connect(model, &WalletModel::walletStateChanged, model,
         [bridge]() {

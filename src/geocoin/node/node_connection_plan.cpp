@@ -77,6 +77,17 @@ bool is_self_endpoint(const std::string& endpoint, int self_check_port) {
            network::NetworkUtils::is_self_address(endpoint, self_check_port);
 }
 
+#ifdef GEOCOIN_MACOS_ARM64
+std::vector<std::string> bootstrap_numeric_seeds(bool use_testnet) {
+    auto seeds = network::get_hardcoded_seed_nodes(use_testnet);
+    const int port = use_testnet ? network::DEFAULT_TESTNET_P2P_PORT : network::DEFAULT_P2P_PORT;
+    for (const auto& host : network::get_dns_seed_hostnames(use_testnet)) {
+        std::erase(seeds, host + ":" + std::to_string(port));
+    }
+    return seeds;
+}
+#endif
+
 PeerBootstrapPlan build_peer_bootstrap_plan(
     const NodeConfig& config,
     bool connect_only_mode,
@@ -87,7 +98,12 @@ PeerBootstrapPlan build_peer_bootstrap_plan(
         // LOADNET has only explicit peers and local fallback endpoints. The
         // fast bootstrap path must follow the same rule as DNS seeding.
         if (consensus::Params().get_network() != consensus::Network::LOADNET) {
+#ifdef GEOCOIN_MACOS_ARM64
+            // DNS discovery supplies numeric addresses without duplicating the fixed peers by hostname.
+            plan.default_seed_nodes = bootstrap_numeric_seeds(use_testnet);
+#else
             plan.default_seed_nodes = network::get_hardcoded_seed_nodes(use_testnet);
+#endif
         }
         plan.local_seed_nodes = local_seed_endpoints(consensus::Params().default_port());
     }

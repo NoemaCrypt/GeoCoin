@@ -51,6 +51,7 @@ typedef void (^GeoGpuExitBlock)(NSInteger exitCode);
 @property (nonatomic, copy, nullable) GeoBalanceBlock onBalances;
 @property (nonatomic, copy, nullable) GeoAddressBlock onAddress;
 @property (nonatomic, copy, nullable) GeoWalletNameBlock onWalletInfo;
+@property (nonatomic, copy, nullable) void (^onWalletHistoryError)(NSString* error);
 @property (nonatomic, copy, nullable) GeoEmptyBlock onTransactionsReset;
 @property (nonatomic, copy, nullable) GeoEmptyBlock onEncryptionChanged;
 

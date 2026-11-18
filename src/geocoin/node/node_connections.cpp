@@ -62,7 +62,11 @@ std::vector<std::string> Node::get_default_seed_nodes() const {
     }
 
     // 2. Если DNS не сработал, используем hardcoded seeds
+#ifdef GEOCOIN_MACOS_ARM64
+    auto seeds = detail::bootstrap_numeric_seeds(use_testnet);
+#else
     std::vector<std::string> seeds = geocoin::network::get_hardcoded_seed_nodes(use_testnet);
+#endif
 
     if (!seeds.empty()) {
         if (detail::node_verbose_enabled()) {
@@ -111,6 +115,18 @@ void Node::connection_loop() {
         LogPrintf("Loaded %zu peer addresses from %s\n", addrman->size(), peers_file.c_str());
     }
 
+#ifdef GEOCOIN_MACOS_ARM64
+    if (!connect_only_mode) {
+        // Older clients persisted the built-in DNS aliases alongside the same IPs.
+        const int port = use_testnet ? network::DEFAULT_TESTNET_P2P_PORT : network::DEFAULT_P2P_PORT;
+        for (const auto& host : network::get_dns_seed_hostnames(use_testnet)) {
+            const auto endpoint = host + ":" + std::to_string(port);
+            if (std::find(config_.seed_nodes.begin(), config_.seed_nodes.end(), endpoint) == config_.seed_nodes.end()) {
+                addrman->remove(endpoint);
+            }
+        }
+    }
+#endif
     // Важно: peers.dat может содержать наши собственные адреса (после смены сети/VM/интерфейсов).
     // Такие адреса удаляем сразу, чтобы не тратить циклы на self-connection.
     {

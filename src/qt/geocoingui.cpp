@@ -789,8 +789,14 @@ void GeoCoinGUI::setWalletModel(WalletModel *model)
             message->setAttribute(Qt::WA_DeleteOnClose);
             message->open();
         };
-        connect(walletModel, &WalletModel::walletHistoryError, this, showHistoryError);
-        showHistoryError(walletModel->getHistoryScanError());
+#ifdef GEOCOIN_NATIVE_MACOS
+        if (!nativeWorkflowsHosted_) {
+#endif
+            connect(walletModel, &WalletModel::walletHistoryError, this, showHistoryError);
+            showHistoryError(walletModel->getHistoryScanError());
+#ifdef GEOCOIN_NATIVE_MACOS
+        }
+#endif
     }
     updateWalletActions();
 }
@@ -1188,6 +1194,9 @@ void GeoCoinGUI::gotoNftPage()
 void GeoCoinGUI::closeEvent(QCloseEvent *event)
 {
     if (closing_) { event->accept(); return; }
+#ifdef GEOCOIN_NATIVE_MACOS
+    if (nativeWorkflowsHosted_) { event->ignore(); return; }
+#endif
     QSettings settings;
     settings.setValue(QStringLiteral("ui/main_window_geometry"), saveGeometry());
     settings.setValue(QStringLiteral("ui/main_window_state"), saveState());

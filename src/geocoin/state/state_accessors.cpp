@@ -470,6 +470,17 @@ bool ChainState::get_active_block_hash(Height height, Hash256& hash) const {
     return block_storage_ && block_storage_->get_active_block_hash(height, hash);
 }
 
+#ifdef GEOCOIN_MACOS_ARM64
+bool ChainState::get_committed_active_tip(Hash256& hash, Height& height) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!block_storage_) return false;
+    if (block_storage_->get_active_tip(hash, height)) return true;
+    // Older stores can have height records without a separate tip record.
+    height = current_height_;
+    return block_storage_->get_active_block_hash(height, hash);
+}
+#endif
+
 bool ChainState::is_block_body_pruned(Height height) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return block_storage_ && block_storage_->is_block_body_pruned(height);

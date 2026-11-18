@@ -12,6 +12,21 @@ using namespace geocoin;
 using test::expect;
 
 namespace {
+#ifdef GEOCOIN_MACOS_ARM64
+void check_scan_uses_committed_tip() {
+    test::TestChain fixture;
+    fixture.append(fixture.make_block());
+    wallet::Wallet wallet;
+    expect(wallet.initialize(test::make_key(42)), "initialize wallet");
+    // connect_tip can publish the state height before writing the block index.
+    expect(fixture.state->set_height(2), "simulate the state being one height ahead");
+    const auto result = wallet.scan_blockchain(fixture.state);
+    expect(result.complete() && result.target_height == 1 &&
+               wallet.get_last_scanned_height() == 1 && wallet.get_transactions().size() == 1,
+           "a concurrent connect must not interrupt scanning the committed chain");
+}
+#endif
+
 void check_unavailable_history() {
     test::TestChain fixture;
     for (int i = 0; i < 3; ++i) fixture.append(fixture.make_block());
@@ -259,6 +274,9 @@ void check_same_height_offline_reorg_anchor() {
 int main() {
     try {
         consensus::SelectParams(consensus::Network::LOADNET);
+#ifdef GEOCOIN_MACOS_ARM64
+        check_scan_uses_committed_tip();
+#endif
         check_genesis_funding_on_incremental_scan();
         check_same_height_offline_reorg_anchor();
         check_unavailable_history();
