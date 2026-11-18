@@ -44,11 +44,38 @@
 #include <QRegularExpression>
 #include <algorithm>
 
+#ifdef GEOCOIN_NATIVE_MACOS
+class GeoMiningStatusLabel final : public QLabel {
+public:
+    GeoMiningStatusLabel(const QString& text, MiningPage* page)
+        : QLabel(text, page), page_(page) {}
+
+    void setText(const QString& text)
+    {
+        QLabel::setText(text);
+        emit page_->nativeGpuStatusChanged(text);
+    }
+
+private:
+    MiningPage* page_;
+};
+#endif
+
 namespace {
 constexpr int RoleCudaId = Qt::UserRole;
 constexpr int RoleHipId = Qt::UserRole + 1;
 constexpr int RoleOpenClId = Qt::UserRole + 2;
 constexpr int RoleBaseText = Qt::UserRole + 3;
+#ifdef GEOCOIN_NATIVE_MACOS
+constexpr int RoleMetalId = Qt::UserRole + 4;
+
+inline int gpuDeviceRole(const QString& backend)
+{
+    if (backend == QLatin1String("metal")) return RoleMetalId;
+    if (backend == QLatin1String("opencl")) return RoleOpenClId;
+    return -1;
+}
+#endif
 
 int cpuMiningThreadLimit()
 {

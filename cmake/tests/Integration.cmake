@@ -1,4 +1,12 @@
 if(BUILD_QT_GUI)
+    if(GEOCOIN_MACOS_ARM64)
+        add_test(NAME test_geocoin_appkit_smoke
+            COMMAND $<TARGET_FILE:geocoin-qt> -platform cocoa --smoke-test -no-auto-connect)
+        add_test(NAME test_geocoin_appkit_layout
+            COMMAND $<TARGET_FILE:geocoin-qt> -platform cocoa --ui-layout-test -no-auto-connect)
+        set_tests_properties(test_geocoin_appkit_smoke test_geocoin_appkit_layout PROPERTIES
+            LABELS "gui;appkit" RUN_SERIAL TRUE TIMEOUT 60)
+    endif()
     find_program(XVFB_RUN_EXECUTABLE xvfb-run)
     if(XVFB_RUN_EXECUTABLE)
         add_test(
@@ -14,6 +22,8 @@ if(BUILD_QT_GUI)
         )
     endif()
     set_tests_properties(test_geocoin_qt_smoke PROPERTIES TIMEOUT 60)
+    # The native Cocoa frontend has its own layout test above.
+    if(NOT GEOCOIN_MACOS_ARM64)
     foreach(_scale 1 1.25 1.5 2)
         string(REPLACE "." "_" _scale_name "${_scale}")
         set(_layout_command ${CMAKE_COMMAND} -E env
@@ -33,6 +43,7 @@ if(BUILD_QT_GUI)
         set_tests_properties(test_geocoin_qt_layout_${_scale_name} PROPERTIES
             LABELS "gui;layout" TIMEOUT 240)
     endforeach()
+    endif()
 endif()
 
 find_package(Python3 3.9 COMPONENTS Interpreter REQUIRED)

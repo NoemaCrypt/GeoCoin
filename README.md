@@ -83,6 +83,11 @@ cmake --build --preset windows-clang-static-release-gui --parallel
 
 Binaries are in `out/build/windows-clang-static-release-gui/`.
 
+### macOS arm64
+
+Use the [macOS build guide](docs/macos/build.md) for the Apple Silicon app,
+the Metal and OpenCL miner, and the four portable and installer packages.
+
 ### GPU and SDK
 
 Miner presets are `linux-release-gui-gpu` and
@@ -291,6 +296,11 @@ cmake --build --preset windows-clang-static-release-gui --parallel
 ```
 
 Бинарники находятся в `out/build/windows-clang-static-release-gui/`.
+
+### macOS arm64
+
+[Руководство по сборке macOS](docs/macos/build.md) описывает приложение для
+Apple Silicon, майнер Metal и OpenCL и сборку четырёх пакетов.
 
 ### GPU и SDK
 

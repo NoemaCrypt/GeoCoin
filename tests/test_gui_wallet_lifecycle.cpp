@@ -136,6 +136,9 @@ static void checkDelayedWalletSnapshot(geocoin::node::Node& node)
     QObject::connect(&model, &WalletModel::walletHistoryError, &model, [&](const QString&) { ++failures; });
     QTimer heartbeat;
     heartbeat.setInterval(5);
+#ifdef GEOCOIN_MACOS_ARM64
+    heartbeat.setTimerType(Qt::PreciseTimer);
+#endif
     QObject::connect(&heartbeat, &QTimer::timeout, &model, [&] { ++heartbeats; });
     heartbeat.start();
     require(model.setRuntimeContext(wallet, std::move(components)), "delayed wallet runtime context failed");
@@ -437,6 +440,9 @@ int main(int argc, char** argv)
             int languageHeartbeats = 0;
             QTimer languageHeartbeat;
             languageHeartbeat.setInterval(10);
+#ifdef GEOCOIN_MACOS_ARM64
+            languageHeartbeat.setTimerType(Qt::PreciseTimer);
+#endif
             QObject::connect(&languageHeartbeat, &QTimer::timeout, [&languageHeartbeats]() { ++languageHeartbeats; });
             languageHeartbeat.start();
             QElapsedTimer languageElapsed;

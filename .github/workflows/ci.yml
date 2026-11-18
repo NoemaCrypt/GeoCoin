@@ -110,6 +110,53 @@ jobs:
         shell: pwsh
         run: cmake --build libgeo\\out\\build\\windows-clang-static-release --config Release --parallel
 
+  linux-arm64:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Bootstrap Ubuntu dependencies
+        run: bash scripts/bootstrap-ubuntu-22.04.sh --with-gui
+
+      - name: Build and test Linux arm64
+        run: |
+          cmake --preset linux-debug-gui -S .
+          cmake --build out/build/linux-debug-gui --parallel 3
+          ctest --test-dir out/build/linux-debug-gui --output-on-failure --parallel 3
+          cmake --preset linux-release -S libgeo
+          cmake --build libgeo/out/build/linux-release --parallel 3
+
+  macos-arm64:
+    runs-on: macos-26
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Bootstrap pinned macOS dependencies
+        run: bash scripts/bootstrap-macos.sh --profile ci
+
+      - name: Build and test macOS arm64
+        run: |
+          cmake --preset macos-arm64-release
+          cmake --build --preset macos-arm64-release --parallel 3
+          ctest --test-dir out/build/macos-arm64-release --output-on-failure
+          cmake --preset macos-arm64-release -S libgeo
+          cmake --build libgeo/out/build/macos-arm64-release --parallel 3
+
+      - name: Audit and test the macOS packages
+        run: |
+          bash scripts/package_portable_macos.sh --profile user --smoke
+          bash scripts/package_portable_macos.sh --profile admin
+          bash scripts/package_portable_macos.sh --profile sdk
+          python3 scripts/check_release_sdk.py out/portable/GeoCoin-macos-arm64-sdk
+          git diff --exit-code
+
   sanitizer:
     runs-on: ubuntu-22.04
     timeout-minutes: 45

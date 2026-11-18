@@ -32,6 +32,25 @@ extern "C" {
 
     void ioke_sha256_init_state(uint32_t state[8]);
     void ioke_sha256_compress(uint32_t state[8], const uint8_t* data, size_t blocks);
+#if defined(GEOCOIN_MACOS_ARM64)
+    /* ARMv8 Crypto Extensions SHA256 kernel (Apple silicon FEAT_SHA256); the
+     * compat TU dispatches to it after the sysctlbyname runtime probe. */
+    void ioke_sha256_compress_arm64_sha2(uint32_t state[8], const uint8_t* data, size_t blocks);
+    typedef struct {
+        uint32_t midstate[8];
+        uint32_t prefix_state[8];
+        uint32_t tail[16];
+        uint32_t length_rounds[64];
+    } IokeSha256d124Arm64;
+
+    /* Call only after the native backend availability check succeeds. */
+    void ioke_sha256d124_arm64_prepare(IokeSha256d124Arm64* prepared, const uint8_t header[124]);
+    void ioke_sha256d124_arm64_hash2(const IokeSha256d124Arm64* prepared,
+                                    uint64_t nonce_a, uint64_t nonce_b,
+                                    uint8_t out_a[32], uint8_t out_b[32]);
+    void ioke_sha256d124_arm64_hash4(const IokeSha256d124Arm64* prepared,
+                                    const uint64_t nonces[4], uint8_t out[4][32]);
+#endif
     void ioke_sha256_compress2_x86_sha_ni(uint32_t state_a[8], const uint8_t* data_a, uint32_t state_b[8], const uint8_t* data_b, size_t blocks);
     void ioke_sha256_compress4_x86_sha_ni(uint32_t state_a[8], const uint8_t* data_a, uint32_t state_b[8], const uint8_t* data_b, uint32_t state_c[8], const uint8_t* data_c, uint32_t state_d[8], const uint8_t* data_d, size_t blocks);
     void ioke_sha256_expand_rounds_x86_sha_ni(const uint8_t block[64], void* rounds_out);

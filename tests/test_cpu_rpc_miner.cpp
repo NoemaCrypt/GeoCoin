@@ -2,8 +2,50 @@
 #include "../tools/rpc_miner.cpp"
 #undef main
 
+#if defined(GEOCOIN_MACOS_ARM64)
+void check_arm_sha2_nonce_batches() {
+    geocoin::bytes header(HeaderPow::kHeaderSize);
+    uint64_t sequence = 0x9328de0109ff003bULL;
+    for (size_t variant = 0; variant < 8; ++variant) {
+        for (size_t i = 0; i < header.size(); ++i) {
+            header[i] = static_cast<uint8_t>(i * 173 + variant * 67);
+        }
+        const auto pow = HeaderPow::prepare(header.data());
+        if (!pow.have_arm_sha2) return;
+        for (size_t batch = 0; batch < 128; ++batch) {
+            uint64_t nonces[4] = {0, UINT64_MAX, 0x0102030405060708ULL, sequence};
+            if (batch != 0) {
+                for (auto& nonce : nonces) {
+                    sequence ^= sequence << 13;
+                    sequence ^= sequence >> 7;
+                    sequence ^= sequence << 17;
+                    nonce = sequence;
+                }
+            }
+            uint8_t four[4][32];
+            uint8_t pair[2][32];
+            pow.hash4(nonces[0], nonces[1], nonces[2], nonces[3], four);
+            pow.hash_pair(nonces[0], nonces[1], pair[0], pair[1]);
+            for (size_t lane = 0; lane < 4; ++lane) {
+                for (size_t byte = 0; byte < sizeof(nonces[lane]); ++byte) {
+                    header[HeaderPow::kNonceOffset + byte] = static_cast<uint8_t>(nonces[lane] >> (byte * 8));
+                }
+                const auto expected = geocoin::crypto::double_sha256(header);
+                if (std::memcmp(four[lane], expected.data(), expected.size()) != 0 ||
+                    (lane < 2 && std::memcmp(pair[lane], expected.data(), expected.size()) != 0)) {
+                    throw std::runtime_error("ARM SHA2 nonce batch differs from canonical proof-of-work hash");
+                }
+            }
+        }
+    }
+}
+#endif
+
 int main() {
     try {
+#if defined(GEOCOIN_MACOS_ARM64)
+        check_arm_sha2_nonce_batches();
+#endif
         const auto capacity = geocoin::node::cpu_mining_thread_limit();
         geocoin::bytes block(124, 0);
         const auto mined = mine_block_bytes(block, 0x207fffff, 1, 2);

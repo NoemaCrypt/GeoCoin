@@ -20,6 +20,9 @@ class NetworkStyle;
 class QThread;
 class GeoCoinCore;
 class QTimer;
+#ifdef GEOCOIN_NATIVE_MACOS
+class GeoCoinNativeFrontend;
+#endif
 
 namespace geocoin { namespace wallet { class Wallet; } }
 
@@ -117,6 +120,9 @@ private:
     ClientModel *clientModel;
     WalletModel *walletModel;
     GeoCoinGUI *window;
+#ifdef GEOCOIN_NATIVE_MACOS
+    std::unique_ptr<GeoCoinNativeFrontend> nativeFrontend;
+#endif
     QTimer *pollTimer;
     geocoin::node::NodeComponentHandle nodeComponents_{};
     ManagedAsyncAction miningStopAction_;

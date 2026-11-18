@@ -50,6 +50,9 @@ if ((CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i[3-6]86") AND
     )
     target_compile_definitions(geocoin_crypto PRIVATE IOKE_SHA256_HAVE_X86_SHA_NI=1)
 endif()
+if(GEOCOIN_MACOS_ARM64)
+    target_sources(geocoin_crypto PRIVATE src/geocoin/crypto/ioke_sha256_arm64_sha2.c)
+endif()
 target_include_directories(geocoin_crypto PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/liboqs/include
     ${CMAKE_CURRENT_SOURCE_DIR}/liboqs/src

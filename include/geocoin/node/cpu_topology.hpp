@@ -26,6 +26,9 @@
 #include <sched.h>
 #include <sys/resource.h>
 #include <unistd.h>
+#elif defined(GEOCOIN_MACOS_ARM64)
+#include <pthread/qos.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace geocoin::node {
@@ -174,6 +177,14 @@ inline size_t linux_cpu_quota(std::istream& memberships, std::istream& mounts) {
 }
 #endif
 
+#ifdef GEOCOIN_MACOS_ARM64
+inline int apple_sysctl_count(const char* key) {
+    int count = 0;
+    size_t len = sizeof(count);
+    return sysctlbyname(key, &count, &len, nullptr, 0) == 0 && len == sizeof(count) ? count : 0;
+}
+#endif
+
 #ifdef _WIN32
 using QueryCpuSets = BOOL (WINAPI*)(PSYSTEM_CPU_SET_INFORMATION, ULONG, PULONG, HANDLE, ULONG);
 using QueryDefaultCpuSets = BOOL (WINAPI*)(HANDLE, PULONG, ULONG, PULONG);
@@ -270,6 +281,23 @@ inline CpuTopology cpu_mining_topology() {
     detail::append_cpu_affinity(result, mask);
     std::ifstream groups("/proc/self/cgroup"), mounts("/proc/self/mountinfo");
     result.quota_threads = detail::linux_cpu_quota(groups, mounts);
+#elif defined(GEOCOIN_MACOS_ARM64)
+    const int active = detail::apple_sysctl_count("hw.activecpu");
+    const int levels = detail::apple_sysctl_count("hw.nperflevels");
+    for (int group = 0; group < levels; ++group) {
+        const std::string key = "hw.perflevel" + std::to_string(group) + ".logicalcpu";
+        const int count = detail::apple_sysctl_count(key.c_str());
+        for (int cpu = 0; cpu < count; ++cpu) {
+            result.processors.push_back({static_cast<uint32_t>(group), static_cast<uint32_t>(cpu)});
+        }
+    }
+    if (result.processors.empty() || (active > 0 && result.processors.size() != static_cast<size_t>(active))) {
+        result.processors.clear();
+        const unsigned count = active > 0 ? static_cast<unsigned>(active) : std::thread::hardware_concurrency();
+        for (unsigned cpu = 0; cpu < count; ++cpu) {
+            result.processors.push_back({0, cpu});
+        }
+    }
 #else
     const auto count = (std::max)(1U, std::thread::hardware_concurrency());
     for (unsigned int i = 0; i < count; ++i) result.processors.push_back({0, i});
@@ -324,6 +352,15 @@ inline bool bind_cpu_mining_worker(const CpuTopology& topology, size_t worker, s
     return detail::background_cpu_mining_worker(
         [] { return getpriority(PRIO_PROCESS, 0); },
         [](int value) { return setpriority(PRIO_PROCESS, 0, value); }, error);
+#elif defined(GEOCOIN_MACOS_ARM64)
+    // macOS selects the actual P/E core. A user-started mining worker should
+    // be eligible for the performance cluster while the UI keeps its QoS.
+    (void)cpu;
+    const int qos_error = pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    if (qos_error != 0) {
+        error = "pthread_set_qos_class_self_np failed: " + std::to_string(qos_error);
+        return false;
+    }
 #else
     (void)cpu;
 #endif

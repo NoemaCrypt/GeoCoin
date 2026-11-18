@@ -159,6 +159,41 @@
       }
     },
     {
+      "name": "macos-release-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/macos-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TOOLS": "ON",
+        "BUILD_MULTISIG_CLI": "OFF",
+        "BUILD_GENESIS_CLI": "OFF",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/qt@5;/opt/homebrew/opt/openssl@3;/opt/homebrew"
+      }
+    },
+    {
+      "name": "macos-debug-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/macos-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TOOLS": "ON",
+        "BUILD_MULTISIG_CLI": "OFF",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/qt@5;/opt/homebrew/opt/openssl@3;/opt/homebrew"
+      }
+    },
+    {
       "name": "linux-release-headless",
       "displayName": "GeoCoin Linux Release Headless",
       "description": "Release-oriented Linux build for node/core components",
@@ -365,6 +400,95 @@
       }
     },
     {
+      "name": "macos-arm64-release-base",
+      "hidden": true,
+      "inherits": "macos-release-base",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/out/macos-deps/installed/arm64-osx-geocoin",
+        "CMAKE_FIND_USE_PACKAGE_REGISTRY": "OFF",
+        "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY": "OFF",
+        "CMAKE_EXE_LINKER_FLAGS": "-Wl,-headerpad_max_install_names",
+        "CMAKE_SHARED_LINKER_FLAGS": "-Wl,-headerpad_max_install_names",
+        "OPENSSL_ROOT_DIR": "${sourceDir}/out/macos-deps/installed/arm64-osx-geocoin",
+        "CMAKE_IGNORE_PREFIX_PATH": "/opt/homebrew;/usr/local",
+        "GEOCOIN_ENABLE_CUDA": "OFF",
+        "GEOCOIN_ENABLE_HIP": "OFF"
+      }
+    },
+    {
+      "name": "macos-arm64-release",
+      "displayName": "GeoCoin macOS 14+ arm64 Release",
+      "inherits": "macos-arm64-release-base",
+      "binaryDir": "${sourceDir}/out/build/macos-arm64-release",
+      "cacheVariables": {
+        "BUILD_TESTS": "ON",
+        "BUILD_QT_GUI": "ON",
+        "BUILD_GPU_MINER": "ON",
+        "GEOCOIN_ENABLE_METAL": "ON",
+        "GEOCOIN_ENABLE_OPENCL": "ON"
+      }
+    },
+    {
+      "name": "macos-arm64-headless",
+      "displayName": "GeoCoin macOS 14+ arm64 Headless",
+      "inherits": "macos-arm64-release-base",
+      "binaryDir": "${sourceDir}/out/build/macos-arm64-headless",
+      "cacheVariables": {
+        "BUILD_TESTS": "OFF",
+        "BUILD_QT_GUI": "OFF"
+      }
+    },
+    {
+      "name": "macos-release-headless",
+      "displayName": "GeoCoin macOS Release Headless",
+      "description": "Release-oriented macOS arm64 build for node/core components",
+      "inherits": "macos-release-base",
+      "cacheVariables": {
+        "BUILD_TESTS": "OFF",
+        "BUILD_QT_GUI": "OFF"
+      }
+    },
+    {
+      "name": "macos-release-gui",
+      "displayName": "GeoCoin macOS Release GUI",
+      "description": "Release-oriented macOS arm64 build with mandatory GUI and GUI tests",
+      "inherits": "macos-release-base",
+      "binaryDir": "${sourceDir}/out/build/macos-release-gui",
+      "cacheVariables": {
+        "BUILD_TESTS": "ON",
+        "BUILD_QT_GUI": "ON"
+      }
+    },
+    {
+      "name": "macos-release-gui-gpu",
+      "displayName": "GeoCoin macOS Release GUI + GPU Miner",
+      "description": "Release-oriented macOS arm64 GUI build with Metal/OpenCL GPU miner",
+      "inherits": "macos-release-base",
+      "binaryDir": "${sourceDir}/out/build/macos-release-gui-gpu",
+      "cacheVariables": {
+        "BUILD_TESTS": "OFF",
+        "BUILD_QT_GUI": "ON",
+        "BUILD_GPU_MINER": "ON",
+        "GEOCOIN_ENABLE_METAL": "ON",
+        "GEOCOIN_ENABLE_OPENCL": "ON",
+        "GEOCOIN_ENABLE_CUDA": "OFF",
+        "GEOCOIN_ENABLE_HIP": "OFF"
+      }
+    },
+    {
+      "name": "macos-debug-gui",
+      "displayName": "GeoCoin macOS Debug GUI",
+      "description": "Debug macOS arm64 build with tests and GUI",
+      "inherits": "macos-debug-base",
+      "binaryDir": "${sourceDir}/out/build/macos-debug-gui",
+      "cacheVariables": {
+        "BUILD_TESTS": "ON",
+        "BUILD_QT_GUI": "ON"
+      }
+    },
+    {
       "name": "linux-release",
       "inherits": "linux-release-headless"
     },
@@ -394,6 +518,14 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "macos-arm64-release",
+      "configurePreset": "macos-arm64-release"
+    },
+    {
+      "name": "macos-arm64-headless",
+      "configurePreset": "macos-arm64-headless"
+    },
     {
       "name": "linux-release-headless",
       "configurePreset": "linux-release-headless"
@@ -501,6 +633,22 @@
       "name": "windows-clang-debug",
       "configurePreset": "windows-clang-debug",
       "configuration": "Debug"
+    },
+    {
+      "name": "macos-release-headless",
+      "configurePreset": "macos-release-headless"
+    },
+    {
+      "name": "macos-release-gui",
+      "configurePreset": "macos-release-gui"
+    },
+    {
+      "name": "macos-release-gui-gpu",
+      "configurePreset": "macos-release-gui-gpu"
+    },
+    {
+      "name": "macos-debug-gui",
+      "configurePreset": "macos-debug-gui"
     }
   ]
 }

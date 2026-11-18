@@ -1,0 +1,23 @@
+{
+  "name": "geocoin-macos-dependencies",
+  "version-string": "0.1.3",
+  "builtin-baseline": "3855d4d6b52353ee2e2f73044327e59d01a18c84",
+  "dependencies": [
+    "boost-beast",
+    "boost-geometry",
+    "libqrencode",
+    {
+      "name": "openssl",
+      "version>=": "3.6.2"
+    },
+    {
+      "name": "qt5-base",
+      "default-features": false
+    },
+    "qt5-tools",
+    {
+      "name": "rocksdb",
+      "features": ["bzip2", "lz4", "snappy", "zstd"]
+    }
+  ]
+}

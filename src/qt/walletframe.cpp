@@ -156,6 +156,9 @@ void WalletFrame::finishLanguageRebuild()
         walletStack->setCurrentIndex(index);
     }
     walletStack->setEnabled(true);
+#ifdef GEOCOIN_NATIVE_MACOS
+    emit nativePagesRebuilt();
+#endif
 }
 
 WalletFrame::~WalletFrame()
@@ -254,6 +257,13 @@ int WalletFrame::pageCount() const
 {
     return walletStack ? walletStack->count() : 0;
 }
+
+#ifdef GEOCOIN_NATIVE_MACOS
+QScrollArea* WalletFrame::nativeCurrentScrollArea() const
+{
+    return qobject_cast<QScrollArea*>(walletStack->currentWidget());
+}
+#endif
 
 bool WalletFrame::isGpuMiningActive() const
 {

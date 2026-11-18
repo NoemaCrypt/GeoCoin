@@ -15,6 +15,9 @@ class ClientModel;
 class WalletModel;
 class NetworkStyle;
 class WalletFrame;
+#ifdef GEOCOIN_NATIVE_MACOS
+class MiningPage;
+#endif
 
 QT_BEGIN_NAMESPACE
 class QAction;
@@ -57,6 +60,13 @@ public:
     void beginShutdown();
     bool minersStopped();
     void openWalletPath(const QString& filename, const QString& password = QString());
+#ifdef GEOCOIN_NATIVE_MACOS
+    void invokeNativeMenuAction(const QString& command);
+    void syncNativeTheme(const QString& theme);
+    void refreshNativeLanguage();
+    MiningPage* nativeMiningController() const;
+    WalletFrame* nativeWalletFrame() const { return walletFrame; }
+#endif
 
 protected:
     void closeEvent(QCloseEvent *event) override;

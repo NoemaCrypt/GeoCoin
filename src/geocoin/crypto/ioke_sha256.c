@@ -36,16 +36,23 @@ static const uint32_t SHA256_IV[8] = {
     0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U
 };
 
+#if defined(GEOCOIN_MACOS_ARM64)
+static atomic_int ioke_sha256_backend_override = IOKE_SHA256_BACKEND_AUTO;
+static atomic_int ioke_sha256_native_available_cached = -1;
+#else
 static int ioke_sha256_backend_override = IOKE_SHA256_BACKEND_AUTO;
 static int ioke_sha256_native_available_cached = -1;
+#endif
 
 /* =============================================================================
  * Architecture availability
  * ============================================================================= */
 
+#if !defined(GEOCOIN_MACOS_ARM64)
 #if (defined(__aarch64__) || defined(__arm__) || defined(_M_ARM64) || defined(_M_ARM)) && \
     defined(__ARM_NEON) && defined(__ARM_FEATURE_CRYPTO)
     #define IOKE_SHA256_USE_ARM_CRYPTO 1
+#endif
 #endif
 
 #if defined(IOKE_SHA256_HAVE_X86_SHA_NI)
@@ -93,10 +100,36 @@ static int ioke_sha256_can_use_x86_sha_ni(void) {
 }
 #endif
 
+#if defined(GEOCOIN_MACOS_ARM64)
+#include <sys/sysctl.h>
+
+/* Cache the Apple SHA2 capability for both native and automatic dispatch. */
+static int ioke_sha256_can_use_arm64_sha2(void) {
+    static atomic_int available_cached = -1;
+    const int cached = atomic_load_explicit(&available_cached, memory_order_relaxed);
+    if (cached >= 0) {
+        return cached;
+    }
+    uint32_t available = 0;
+    size_t len = sizeof(available);
+    const int supported = sysctlbyname("hw.optional.arm.FEAT_SHA256", &available, &len, NULL, 0) == 0 &&
+                          len == sizeof(available) && available != 0;
+    atomic_store_explicit(&available_cached, supported, memory_order_relaxed);
+    return supported;
+}
+#endif
+
 static int ioke_sha256_can_use_native(void) {
+#if defined(GEOCOIN_MACOS_ARM64)
+    const int cached = atomic_load_explicit(&ioke_sha256_native_available_cached, memory_order_relaxed);
+    if (cached >= 0) {
+        return cached;
+    }
+#else
     if (ioke_sha256_native_available_cached >= 0) {
         return ioke_sha256_native_available_cached;
     }
+#endif
 
     int available = 0;
 #if defined(IOKE_SHA256_HAVE_X86_SHA_NI)
@@ -107,7 +140,12 @@ static int ioke_sha256_can_use_native(void) {
 #if defined(IOKE_SHA256_USE_ARM_CRYPTO)
     available = 1;
 #endif
+#if defined(GEOCOIN_MACOS_ARM64)
+    available = ioke_sha256_can_use_arm64_sha2();
+    atomic_store_explicit(&ioke_sha256_native_available_cached, available, memory_order_relaxed);
+#else
     ioke_sha256_native_available_cached = available;
+#endif
     return available;
 }
 
@@ -358,22 +396,40 @@ static void ioke_sha256_compress_blocks(uint32_t state[8], const uint8_t* data, 
 #if defined(IOKE_SHA256_FORCE_X86_IMPL)
     ioke_sha256_compress_x86_sha_ni(state, data, blocks);
 #elif defined(IOKE_SHA256_FORCE_ARM_IMPL)
+#if defined(GEOCOIN_MACOS_ARM64)
+    ioke_sha256_compress_arm64_sha2(state, data, blocks);
+#else
     ioke_sha256_compress_arm(state, data, blocks);
+#endif
 #elif defined(IOKE_SHA256_FORCE_LEGACY_IMPL)
     ioke_sha256_compress_legacy(state, data, blocks);
 #else
+#if defined(GEOCOIN_MACOS_ARM64)
+    const int requested = atomic_load_explicit(&ioke_sha256_backend_override, memory_order_relaxed);
+    if (requested == IOKE_SHA256_BACKEND_LEGACY) {
+#else
     if (ioke_sha256_backend_override == IOKE_SHA256_BACKEND_LEGACY) {
+#endif
         ioke_sha256_compress_legacy(state, data, blocks);
         return;
     }
+#if defined(GEOCOIN_MACOS_ARM64)
+    if (requested == IOKE_SHA256_BACKEND_NATIVE) {
+#else
     if (ioke_sha256_backend_override == IOKE_SHA256_BACKEND_NATIVE) {
+#endif
 #if defined(IOKE_SHA256_HAVE_X86_SHA_NI)
         if (ioke_sha256_can_use_native()) {
             ioke_sha256_compress_x86_sha_ni(state, data, blocks);
             return;
         }
 #endif
-#if defined(IOKE_SHA256_USE_ARM_CRYPTO)
+#if defined(GEOCOIN_MACOS_ARM64)
+        if (ioke_sha256_can_use_arm64_sha2()) {
+            ioke_sha256_compress_arm64_sha2(state, data, blocks);
+            return;
+        }
+#elif defined(IOKE_SHA256_USE_ARM_CRYPTO)
         ioke_sha256_compress_arm(state, data, blocks);
         return;
 #endif
@@ -390,7 +446,11 @@ static void ioke_sha256_compress_blocks(uint32_t state[8], const uint8_t* data, 
             choice = 1;
         }
 #endif
-#if defined(IOKE_SHA256_USE_ARM_CRYPTO)
+#if defined(GEOCOIN_MACOS_ARM64)
+        if (choice == 0 && ioke_sha256_can_use_arm64_sha2()) {
+            choice = 2;
+        }
+#elif defined(IOKE_SHA256_USE_ARM_CRYPTO)
         if (choice == 0) {
             choice = 2;
         }
@@ -413,7 +473,9 @@ static void ioke_sha256_compress_blocks(uint32_t state[8], const uint8_t* data, 
         ioke_sha256_compress_legacy(state, data, blocks);
 #endif
     } else if (selected == 2) {
-#if defined(IOKE_SHA256_USE_ARM_CRYPTO)
+#if defined(GEOCOIN_MACOS_ARM64)
+        ioke_sha256_compress_arm64_sha2(state, data, blocks);
+#elif defined(IOKE_SHA256_USE_ARM_CRYPTO)
         ioke_sha256_compress_arm(state, data, blocks);
 #else
         ioke_sha256_compress_legacy(state, data, blocks);
@@ -428,9 +490,17 @@ void ioke_sha256_set_backend(int backend) {
     if (backend == IOKE_SHA256_BACKEND_LEGACY ||
         backend == IOKE_SHA256_BACKEND_NATIVE ||
         backend == IOKE_SHA256_BACKEND_AUTO) {
+#if defined(GEOCOIN_MACOS_ARM64)
+        atomic_store_explicit(&ioke_sha256_backend_override, backend, memory_order_relaxed);
+#else
         ioke_sha256_backend_override = backend;
+#endif
     } else {
+#if defined(GEOCOIN_MACOS_ARM64)
+        atomic_store_explicit(&ioke_sha256_backend_override, IOKE_SHA256_BACKEND_AUTO, memory_order_relaxed);
+#else
         ioke_sha256_backend_override = IOKE_SHA256_BACKEND_AUTO;
+#endif
     }
 }
 
@@ -445,10 +515,19 @@ int ioke_sha256_backend_available(int backend) {
 }
 
 const char* ioke_sha256_backend_name(void) {
+#if defined(GEOCOIN_MACOS_ARM64)
+    const int requested = atomic_load_explicit(&ioke_sha256_backend_override, memory_order_relaxed);
+    if (requested == IOKE_SHA256_BACKEND_LEGACY) {
+#else
     if (ioke_sha256_backend_override == IOKE_SHA256_BACKEND_LEGACY) {
+#endif
         return "legacy";
     }
+#if defined(GEOCOIN_MACOS_ARM64)
+    if (requested == IOKE_SHA256_BACKEND_NATIVE) {
+#else
     if (ioke_sha256_backend_override == IOKE_SHA256_BACKEND_NATIVE) {
+#endif
         return ioke_sha256_backend_available(IOKE_SHA256_BACKEND_NATIVE) ? "native" : "legacy";
     }
     if (ioke_sha256_backend_available(IOKE_SHA256_BACKEND_NATIVE)) {

@@ -46,7 +46,12 @@ public:
         , technicalPlanHashEdit_(new QLineEdit(this))
         , photoHashesEdit_(new QLineEdit(this))
         , docsArchiveEdit_(new QLineEdit(this))
+#ifdef GEOCOIN_NATIVE_MACOS
+        // The compact label fits the native 640pt window minimum.
+        , uploadDocsArchiveButton_(new QPushButton(tr("Upload zip..."), this))
+#else
         , uploadDocsArchiveButton_(new QPushButton(tr("Upload documents (zip)..."), this))
+#endif
         , marketValueEdit_(new QLineEdit(this))
         , cadastralValueEdit_(new QLineEdit(this))
         , valuationDateEdit_(new QDateTimeEdit(this))

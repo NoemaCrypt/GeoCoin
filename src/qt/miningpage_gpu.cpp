@@ -2,6 +2,9 @@
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#ifdef GEOCOIN_NATIVE_MACOS
+#include <QFileInfo>
+#endif
 
 struct MiningPage::RpcCleanupState {
     std::unique_ptr<geocoin::rpc::RPCServer> server;
@@ -67,6 +70,16 @@ QString MiningPage::gpuMinerBinaryPath() const
 #else
     const QString exe = QStringLiteral("geocoin-gpu-miner");
 #endif
+#ifdef GEOCOIN_NATIVE_MACOS
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    if (appDir.dirName() == QLatin1String("MacOS")) {
+        for (const auto& path : {QStringLiteral("../Helpers/%1").arg(exe), QStringLiteral("../../../%1").arg(exe)}) {
+            const QString candidate = appDir.filePath(path);
+            const QFileInfo entry(candidate);
+            if (entry.isFile() && entry.isExecutable()) return QDir::cleanPath(candidate);
+        }
+    }
+#endif
     const QString sameDir = QDir(QCoreApplication::applicationDirPath()).filePath(exe);
     if (QFile::exists(sameDir)) {
         return sameDir;
@@ -81,13 +94,32 @@ QString MiningPage::gpuMinerBinaryPath() const
 QString MiningPage::selectedGpuBackend() const
 {
     if (checkGpuHip && checkGpuHip->isChecked()) {
+#ifdef GEOCOIN_NATIVE_MACOS
+        return QStringLiteral("metal");
+#else
         return QStringLiteral("hip");
+#endif
     }
     if (checkGpuOpenCl && checkGpuOpenCl->isChecked()) {
         return QStringLiteral("opencl");
     }
+#ifdef GEOCOIN_NATIVE_MACOS
+    return QStringLiteral("auto");
+#else
     return QStringLiteral("cuda");
+#endif
 }
+
+#ifdef GEOCOIN_NATIVE_MACOS
+int MiningPage::selectedGpuDeviceRole() const
+{
+    const QString backend = selectedGpuBackend();
+    if (backend == QLatin1String("auto")) {
+        return checkGpuHip->property("backendAvailable").toBool() ? RoleMetalId : RoleOpenClId;
+    }
+    return gpuDeviceRole(backend);
+}
+#endif
 
 QStringList MiningPage::selectedGpuDeviceIds() const
 {
@@ -95,10 +127,14 @@ QStringList MiningPage::selectedGpuDeviceIds() const
     if (!listGpuDevices) {
         return ids;
     }
+#ifdef GEOCOIN_NATIVE_MACOS
+    const int role = selectedGpuDeviceRole();
+#else
     const QString backend = selectedGpuBackend();
     const int role = backend == QLatin1String("cuda")
         ? RoleCudaId
         : (backend == QLatin1String("hip") ? RoleHipId : RoleOpenClId);
+#endif
     for (int i = 0; i < listGpuDevices->count(); ++i) {
         QListWidgetItem *item = listGpuDevices->item(i);
         if (!item || item->checkState() != Qt::Checked) {
@@ -166,10 +202,14 @@ void MiningPage::updateGpuDeviceItemsForBackend(bool checkAvailable)
         return;
     }
 
+#ifdef GEOCOIN_NATIVE_MACOS
+    const int role = selectedGpuDeviceRole();
+#else
     const QString backend = selectedGpuBackend();
     const int role = backend == QLatin1String("cuda")
         ? RoleCudaId
         : (backend == QLatin1String("hip") ? RoleHipId : RoleOpenClId);
+#endif
     for (int i = 0; i < listGpuDevices->count(); ++i) {
         QListWidgetItem *item = listGpuDevices->item(i);
         if (!item || !item->data(RoleBaseText).isValid()) {
@@ -338,21 +378,38 @@ void MiningPage::processGpuStatsLine(const QByteArray& line)
     }
     const QJsonObject obj = doc.object();
     const QString event = obj.value(QStringLiteral("event")).toString();
+#ifdef GEOCOIN_NATIVE_MACOS
+    const QString resolvedBackend = obj.value(QStringLiteral("backend")).toString();
+    if (resolvedBackend == QLatin1String("metal") || resolvedBackend == QLatin1String("opencl")) {
+        activeNativeGpuBackend = resolvedBackend;
+    }
+#endif
     if (event == QLatin1String("status")) {
         if (gpuStopRequested) return;
         gpuHashrate = obj.value(QStringLiteral("hashrate")).toDouble(gpuHashrate);
         labelGpuHashrate->setText(GUIUtil::formatHashrate(gpuHashrate));
+#ifdef GEOCOIN_NATIVE_MACOS
+        labelGpuStatus->setText(tr("Mining: %1").arg(activeNativeGpuBackend.toUpper()));
+#else
         labelGpuStatus->setText(tr("Mining"));
+#endif
         const QJsonArray devices = obj.value(QStringLiteral("devices")).toArray();
         for (const QJsonValue& value : devices) {
             const QJsonObject dev = value.toObject();
             const QString backend = dev.value(QStringLiteral("backend")).toString();
+#ifdef GEOCOIN_NATIVE_MACOS
+            const int role = gpuDeviceRole(backend);
+            if (role < 0) continue;
+#else
             if (backend != QLatin1String("cuda") && backend != QLatin1String("hip") && backend != QLatin1String("opencl")) continue;
+#endif
             const int id = dev.value(QStringLiteral("id")).toInt(-1);
             const double hashrate = dev.value(QStringLiteral("hashrate")).toDouble(0.0);
+#ifndef GEOCOIN_NATIVE_MACOS
             const int role = backend == QLatin1String("cuda")
                 ? RoleCudaId
                 : (backend == QLatin1String("hip") ? RoleHipId : RoleOpenClId);
+#endif
             for (int i = 0; i < listGpuDevices->count(); ++i) {
                 QListWidgetItem *item = listGpuDevices->item(i);
                 if (!item || itemIntRole(item, role) != id) {
@@ -461,11 +518,15 @@ void MiningPage::gpuProbeFinished(int, QProcess::ExitStatus)
 {
     const QByteArray output = gpuDeviceProbe->readAllStandardOutput();
     listGpuDevices->clear();
+#ifdef GEOCOIN_NATIVE_MACOS
+    QList<QJsonObject> metalDevices;
+#else
     bool hasCuda = false;
     bool hasHip = false;
     bool hasOpenCl = false;
     QList<QJsonObject> cudaDevices;
     QList<QJsonObject> hipDevices;
+#endif
     QList<QJsonObject> openClDevices;
 
     const QList<QByteArray> lines = output.split('\n');
@@ -485,6 +546,14 @@ void MiningPage::gpuProbeFinished(int, QProcess::ExitStatus)
         for (const QJsonValue& value : devices) {
             const QJsonObject dev = value.toObject();
             const QString backend = dev.value(QStringLiteral("backend")).toString();
+#ifdef GEOCOIN_NATIVE_MACOS
+            if (!dev.value(QStringLiteral("available")).toBool(true)) continue;
+            if (backend == QLatin1String("metal")) {
+                metalDevices.append(dev);
+            } else if (backend == QLatin1String("opencl")) {
+                openClDevices.append(dev);
+            }
+#else
             if (backend == QLatin1String("cuda")) {
                 cudaDevices.append(dev);
                 hasCuda = true;
@@ -495,10 +564,57 @@ void MiningPage::gpuProbeFinished(int, QProcess::ExitStatus)
                 openClDevices.append(dev);
                 hasOpenCl = true;
             }
+#endif
         }
     }
 
     QVector<bool> openClUsed(openClDevices.size(), false);
+#ifdef GEOCOIN_NATIVE_MACOS
+    const bool appleSiliconGpu =
+#if defined(__arm64__) || defined(__aarch64__)
+        metalDevices.size() == 1 && openClDevices.size() == 1 &&
+        metalDevices.first().value(QStringLiteral("vendor")).toString() == QLatin1String("Apple") &&
+        openClDevices.first().value(QStringLiteral("vendor")).toString() == QLatin1String("Apple") &&
+        deviceDisplayName(metalDevices.first(), {}) == deviceDisplayName(openClDevices.first(), {});
+#else
+        false;
+#endif
+    const auto addDevice = [this](const QJsonObject& metal, const QJsonObject& opencl) {
+        const int metalId = metal.value(QStringLiteral("id")).toInt(-1);
+        const int openClId = opencl.value(QStringLiteral("id")).toInt(-1);
+        QStringList descriptions;
+        if (metalId >= 0) descriptions << QStringLiteral("Metal #%1").arg(metalId);
+        if (openClId >= 0) descriptions << QStringLiteral("OpenCL #%1").arg(openClId);
+        const QString base = QStringLiteral("%1  |  %2")
+            .arg(deviceDisplayName(metal, opencl), descriptions.join(QStringLiteral(" / ")));
+        auto* item = new QListWidgetItem(base, listGpuDevices);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Checked);
+        item->setData(RoleMetalId, metalId);
+        item->setData(RoleOpenClId, openClId);
+        item->setData(RoleBaseText, base);
+    };
+    for (const QJsonObject& metal : metalDevices) {
+        QJsonObject peer;
+        for (int i = 0; i < openClDevices.size(); ++i) {
+            if (!openClUsed[i] && (appleSiliconGpu || samePhysicalGpuModel(metal, openClDevices[i]))) {
+                peer = openClDevices[i];
+                openClUsed[i] = true;
+                break;
+            }
+        }
+        addDevice(metal, peer);
+    }
+    for (int i = 0; i < openClDevices.size(); ++i) {
+        if (!openClUsed[i]) addDevice({}, openClDevices[i]);
+    }
+    setGpuBackendAvailability(!metalDevices.empty() || !openClDevices.empty(),
+                              !metalDevices.empty(), !openClDevices.empty());
+    if (listGpuDevices->count() == 0) {
+        auto* empty = new QListWidgetItem(tr("No Metal/OpenCL GPU devices found"), listGpuDevices);
+        empty->setFlags(Qt::NoItemFlags);
+    }
+#else
     for (const QJsonObject& cudaDevice : cudaDevices) {
         int matchedOpenCl = -1;
         for (int i = 0; i < openClDevices.size(); ++i) {
@@ -578,8 +694,118 @@ void MiningPage::gpuProbeFinished(int, QProcess::ExitStatus)
         QListWidgetItem *empty = new QListWidgetItem(tr("No CUDA/HIP/OpenCL GPU devices found"), listGpuDevices);
         empty->setFlags(Qt::NoItemFlags);
     }
+#endif
 }
 
+#ifdef GEOCOIN_NATIVE_MACOS
+void MiningPage::toggleGpuMining()
+{
+    if (isGpuMiningActive()) {
+        stopGpuMining();
+        return;
+    }
+
+    QString error;
+    if (!startGpuMiningSession(selectedGpuBackend(), selectedGpuDeviceIds(), spinGpuIntensity->value(), &error)) {
+        if (!error.isEmpty()) {
+            showStyledMessageBox(!walletModel || !walletModel->isWalletLoaded() ? 2 : 3,
+                                 tr("GPU Mining"), error);
+        }
+    }
+}
+
+bool MiningPage::startNativeGpuMining(const QString& backend, const QStringList& devices, int intensity, QString* error)
+{
+    if (isGpuMiningActive()) {
+        *error = tr("A GPU mining session is already active.");
+        return false;
+    }
+    if (backend != QLatin1String("auto") && backend != QLatin1String("metal") &&
+        backend != QLatin1String("opencl")) {
+        *error = tr("Unknown GPU backend.");
+        return false;
+    }
+    if (intensity < spinGpuIntensity->minimum() || intensity > spinGpuIntensity->maximum()) {
+        *error = tr("Invalid GPU intensity.");
+        return false;
+    }
+    return startGpuMiningSession(backend, devices, intensity, error);
+}
+
+QString MiningPage::nativeGpuMiningStatus() const
+{
+    return labelGpuStatus->text();
+}
+
+bool MiningPage::startGpuMiningSession(const QString& backend, const QStringList& devices, int intensity, QString* error)
+{
+    if (!walletModel || !walletModel->isWalletLoaded()) {
+        *error = tr("Please load or create a wallet before GPU mining.");
+        return false;
+    }
+    if (!clientModel || !clientModel->getNodeComponents().complete_for_rpc()) {
+        *error = tr("Node not initialized");
+        return false;
+    }
+    if (!gpuMinerProcess) {
+        createGpuMinerProcess();
+    }
+    if (gpuMinerProcess && gpuMinerProcess->state() != QProcess::NotRunning) {
+        labelGpuStatus->setText(tr("Stopping previous GPU miner..."));
+        resetGpuMinerProcess(true);
+        return false;
+    }
+
+    if (!startPrivateGpuRpc(error)) {
+        return false;
+    }
+
+    const QString miner = gpuMinerBinaryPath();
+    if (!QFile::exists(miner)) {
+        stopPrivateGpuRpc();
+        *error = tr("geocoin-gpu-miner was not found in the bundle.");
+        return false;
+    }
+    if (devices.isEmpty()) {
+        stopPrivateGpuRpc();
+        *error = tr("No selected GPU devices support the %1 backend.").arg(backend.toUpper());
+        return false;
+    }
+
+    QStringList args;
+    args << QStringLiteral("--url") << QStringLiteral("http://127.0.0.1:%1/").arg(gpuRpcPort)
+         << QStringLiteral("--rpc-user") << gpuRpcUser
+         << QStringLiteral("--rpc-pass-file") << gpuRpcPasswordFile
+         << QStringLiteral("--address") << walletModel->getAddress()
+         << QStringLiteral("--backend") << backend
+         << QStringLiteral("--intensity") << QString::number(intensity)
+         << QStringLiteral("--continuous")
+         << QStringLiteral("--control-stdin")
+         << QStringLiteral("--stats-json")
+         << QStringLiteral("--devices") << devices.join(QLatin1Char(','));
+
+    gpuStopRequested = false;
+    activeNativeGpuBackend = backend;
+    gpuLastError.clear();
+    gpuOutputBuffer.clear();
+    gpuErrorBuffer.clear();
+    gpuAcceptedBlocks = 0;
+    gpuRejectedBlocks = 0;
+    labelGpuAccepted->setText(QStringLiteral("0"));
+    labelGpuRejected->setText(QStringLiteral("0"));
+    clearGpuRates();
+    labelGpuHashrate->setText(tr("0 H/s"));
+    labelGpuStatus->setText(tr("Starting GPU miner..."));
+    createGpuMinerProcess();
+    gpuMinerProcess->setProgram(miner);
+    gpuMinerProcess->setArguments(args);
+    setGpuMiningUi(true);
+    recordGpuDiagnostic(QStringLiteral("Starting"), backend + QStringLiteral(" devices=") + devices.join(QLatin1Char(',')));
+    gpuMinerProcess->start();
+    return true;
+}
+
+#else
 void MiningPage::toggleGpuMining()
 {
     if (isGpuMiningActive()) {
@@ -657,6 +883,8 @@ void MiningPage::toggleGpuMining()
     recordGpuDiagnostic(QStringLiteral("Starting"), backend + QStringLiteral(" devices=") + devices.join(QLatin1Char(',')));
     gpuMinerProcess->start();
 }
+
+#endif
 
 void MiningPage::stopGpuMining()
 {
@@ -866,8 +1094,14 @@ void MiningPage::recordGpuDiagnostic(const QString& event, const QString& detail
     safe.replace(QRegularExpression(QStringLiteral("https?://[^ /]*@")), QStringLiteral("http://[redacted]@"));
     if (safe.contains(QRegularExpression(QStringLiteral("password|passphrase|private.?key|secret|seed|mnemonic"),
                                         QRegularExpression::CaseInsensitiveOption))) safe = QStringLiteral("[sensitive diagnostic omitted]");
+#ifdef GEOCOIN_NATIVE_MACOS
+    const QString backend = activeNativeGpuBackend.isEmpty() ? selectedGpuBackend() : activeNativeGpuBackend;
+    file.write((QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + QLatin1Char(' ') +
+                backend + QLatin1Char(' ') + event.left(32) + QLatin1Char(' ') + safe + QLatin1Char('\n')).toUtf8());
+#else
     file.write((QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + QLatin1Char(' ') +
                 selectedGpuBackend() + QLatin1Char(' ') + event.left(32) + QLatin1Char(' ') + safe + QLatin1Char('\n')).toUtf8());
+#endif
 }
 
 bool MiningPage::runProcessLifecycleChecks(const QString& fixture, QString* error)
@@ -901,6 +1135,11 @@ bool MiningPage::runProcessLifecycleChecks(const QString& fixture, QString* erro
         setProperty("geocoinTestRpcStopFailures", mode == QLatin1String("--rpc-stop-failure") ? 1 : 0);
         QTimer heartbeat;
         heartbeat.setInterval(10);
+#ifdef GEOCOIN_MACOS_ARM64
+        // Qt's Cocoa dispatcher rounds coarse timers to ~50 ms run-loop ticks;
+        // a precise timer keeps the diagnostics heartbeat near its 10 ms period on macOS.
+        heartbeat.setTimerType(Qt::PreciseTimer);
+#endif
         connect(&heartbeat, &QTimer::timeout, &loop, [&] { ++heartbeats; });
         QTimer watchdog;
         watchdog.setSingleShot(true);
@@ -932,8 +1171,13 @@ bool MiningPage::runProcessLifecycleChecks(const QString& fixture, QString* erro
         watchdog.start(6000);
         loop.exec();
         if (timedOut || !complete || isGpuMiningActive() || elapsed.elapsed() >= 5000 ||
+#ifdef GEOCOIN_MACOS_ARM64
+            (injectedCleanupFailure && (cleanupErrors != 1 || !retainedListener || heartbeats < 8)) ||
+            (mode == QLatin1String("--hang-fixture") && heartbeats < 8) ||
+#else
             (injectedCleanupFailure && (cleanupErrors != 1 || !retainedListener || heartbeats < 25)) ||
             (mode == QLatin1String("--hang-fixture") && heartbeats < 200) ||
+#endif
             (mode == QLatin1String("--crash-fixture") && !gpuLastError.contains(QStringLiteral("offline fixture crash")))) {
             if (gpuMinerProcess && gpuMinerProcess->state() != QProcess::NotRunning) {
                 gpuMinerProcess->kill();

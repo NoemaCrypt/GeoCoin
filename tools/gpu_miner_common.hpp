@@ -17,6 +17,9 @@ enum class Backend {
     Cuda,
     Hip,
     OpenCl,
+#ifdef GEOCOIN_MACOS_ARM64
+    Metal,
+#endif
 };
 
 struct DeviceInfo {
@@ -93,6 +96,9 @@ class NonceCursor {
     uint64_t next_, stride_;
 public:
     NonceCursor(uint64_t start, uint64_t lane, uint64_t stride) : next_(start + lane), stride_(stride) {}
+#ifdef GEOCOIN_MACOS_ARM64
+    uint64_t next() const { return next_; }
+#endif
     uint64_t take(uint64_t attempts) {
         const uint64_t base = next_;
         next_ += attempts * stride_;
@@ -128,6 +134,10 @@ std::vector<DeviceInfo> list_opencl_devices();
 MiningResult mine_cuda(const MiningJob& job, const std::vector<int>& device_ids);
 MiningResult mine_hip(const MiningJob& job, const std::vector<int>& device_ids);
 MiningResult mine_opencl(const MiningJob& job, const std::vector<int>& device_ids);
+#ifdef GEOCOIN_MACOS_ARM64
+std::vector<DeviceInfo> list_metal_devices();
+MiningResult mine_metal(const MiningJob& job, const std::vector<int>& device_ids);
+#endif
 
 const char* backend_name(Backend backend);
 Backend parse_backend(const std::string& value);

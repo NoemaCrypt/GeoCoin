@@ -8,6 +8,10 @@
 #include <openssl/kdf.h>
 #include <openssl/rand.h>
 #include <openssl/crypto.h>
+#if defined(GEOCOIN_MACOS_ARM64)
+#include <openssl/core_names.h>
+#include <openssl/params.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -147,6 +151,33 @@ bool hkdf_expand(
 ) {
     utils::cleanse_container(output);
     output.assign(kExpandedKeySize, 0);
+#if defined(GEOCOIN_MACOS_ARM64)
+    // Use OpenSSL's provider API with the same RFC 5869 extract-and-expand
+    // inputs as the legacy EVP_PKEY HKDF path used by other builds.
+    const std::unique_ptr<EVP_KDF, decltype(&EVP_KDF_free)> kdf(
+        EVP_KDF_fetch(nullptr, "HKDF", nullptr), &EVP_KDF_free);
+    const std::unique_ptr<EVP_KDF_CTX, decltype(&EVP_KDF_CTX_free)> context(
+        kdf ? EVP_KDF_CTX_new(kdf.get()) : nullptr, &EVP_KDF_CTX_free);
+    char digest[] = "SHA256";
+    int mode = EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND;
+    const OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, digest, 0),
+        OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &mode),
+        OSSL_PARAM_construct_octet_string(
+            OSSL_KDF_PARAM_SALT, const_cast<byte*>(salt.data()), salt.size()),
+        OSSL_PARAM_construct_octet_string(
+            OSSL_KDF_PARAM_KEY, const_cast<byte*>(input_key_material.data()),
+            input_key_material.size()),
+        OSSL_PARAM_construct_octet_string(
+            OSSL_KDF_PARAM_INFO, const_cast<char*>(kKeyDomain), sizeof(kKeyDomain) - 1),
+        OSSL_PARAM_construct_end()
+    };
+    if (!context || EVP_KDF_derive(context.get(), output.data(), output.size(), params) != 1) {
+        utils::cleanse_container(output);
+        return false;
+    }
+    return true;
+#else
     PkeyContext context(EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr), &EVP_PKEY_CTX_free);
     if (!context ||
         EVP_PKEY_derive_init(context.get()) != 1 ||
@@ -172,6 +203,7 @@ bool hkdf_expand(
         return false;
     }
     return true;
+#endif
 }
 
 bool valid_hello(const SecureHelloData& hello) {

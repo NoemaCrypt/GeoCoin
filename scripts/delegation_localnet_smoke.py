@@ -109,7 +109,10 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument("--coinbase-maturity", type=int, default=100)
     parser.add_argument("--mining-threads", type=int, default=1)
-    parser.add_argument("--gpu-backend", default="auto", choices=("auto", "cuda", "hip", "opencl"))
+    gpu_backends = ("auto", "cuda", "hip", "opencl")
+    if sys.platform == "darwin":
+        gpu_backends += ("metal",)
+    parser.add_argument("--gpu-backend", default="auto", choices=gpu_backends)
     parser.add_argument("--gpu-devices", default="")
     parser.add_argument("--gpu-intensity", type=int, default=16777216)
     parser.add_argument("--gpu-max-launch-attempts", type=int, default=16777216)

@@ -1,0 +1,14 @@
+GeoCoin Core для macOS / GeoCoin Core for macOS
+
+Apple Silicon, macOS 14.0+.
+
+Откройте GeoCoin Core.app из «Программ» или распакуйте весь архив и запустите
+./geocoin-core. Кошелёк запустит встроенную ноду и синхронизацию. Для GPU
+доступны Metal и OpenCL. Режим Auto предпочитает Metal.
+
+Open GeoCoin Core.app from Applications or unpack the whole archive and run
+./geocoin-core. Core starts its built-in node and synchronizes automatically.
+GPU mining supports Metal and OpenCL. Auto prefers Metal.
+
+Команды / Commands: ./geocoin-node --help, ./geocoin-rpc-miner --help,
+./geocoin-gpu-miner --help.

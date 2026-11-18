@@ -35,6 +35,9 @@ public:
     void setWalletModel(WalletModel *walletModel);
     bool hasRequiredPages() const;
     int pageCount() const;
+#ifdef GEOCOIN_NATIVE_MACOS
+    QScrollArea* nativeCurrentScrollArea() const;
+#endif
     bool isGpuMiningActive() const;
     bool hasPendingMiningAction() const;
     void stopGpuMining();
@@ -46,6 +49,9 @@ public:
 signals:
     void gpuMiningChanged(bool enabled, double hashrate, int acceptedBlocks, int rejectedBlocks);
     void gpuMiningStopped();
+#ifdef GEOCOIN_NATIVE_MACOS
+    void nativePagesRebuilt();
+#endif
 
 public slots:
     void gotoOverviewPage();
