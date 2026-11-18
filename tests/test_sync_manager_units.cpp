@@ -1187,6 +1187,32 @@ void test_empty_headers_penalty_disconnects_ahead_peer()
     expect(last_reason == "sync-invalid-headers", "empty header penalty uses invalid-headers reason");
 }
 
+#ifdef GEOCOIN_MACOS_ARM64
+void test_empty_headers_after_validated_tip_keep_peer()
+{
+    ChainFixture fixture;
+    geocoin::network::SyncManager sync(fixture.chain_state, fixture.blockchain);
+
+    SocketPair sockets;
+    auto peer = make_peer(sockets, 1);
+    expect(sync.start_sync(peer, 1), "start header discovery");
+    (void)sockets.read_message();
+    const auto child = mine_easy_child_block(fixture.genesis, fixture.blockchain->get_tip(), 0x71);
+    expect(sync.handle_headers(peer, {child.header}), "peer supplied the header it advertised");
+    expect(sync.get_stats().current_height == 0 && sync.get_stats().target_height == 1,
+           "header is validated while its block body is still missing");
+
+    int disconnects = 0;
+    sync.set_peer_disconnect_callback(
+        [&](std::shared_ptr<geocoin::network::Peer>, const std::string&) { ++disconnects; }
+    );
+    for (int i = 0; i < 8; ++i) {
+        expect(sync.handle_headers(peer, {}), "valid empty page remains accepted");
+    }
+    expect(disconnects == 0, "normal header exhaustion does not drop the block-serving peer");
+}
+#endif
+
 void test_download_queue_dispatch_and_inv_dedupes()
 {
     ChainFixture fixture;
@@ -2107,6 +2133,9 @@ int main()
         test_valid_headers_index_and_download_queue_paths();
         test_header_state_pruning();
         test_empty_headers_penalty_disconnects_ahead_peer();
+#ifdef GEOCOIN_MACOS_ARM64
+        test_empty_headers_after_validated_tip_keep_peer();
+#endif
         test_download_queue_dispatch_and_inv_dedupes();
         test_inv_known_headers_and_idle_watchdog();
         test_download_timeout_requeues_without_ready_peer();

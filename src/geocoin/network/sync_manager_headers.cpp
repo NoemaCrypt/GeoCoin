@@ -471,15 +471,16 @@ bool SyncManager::handle_headers(
 
     auto mark_peer_headers_exhausted = [&](Height validated_height) {
         if (!peer) {
-            return;
+            return validated_height;
         }
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = sync_peers_.find(peer->get_address());
         if (it == sync_peers_.end()) {
-            return;
+            return validated_height;
         }
         it->second.height = std::max(it->second.height, validated_height);
         it->second.headers_exhausted = true;
+        return it->second.height;
     };
 
     auto reject_failed_parent = [&](const Hash256& hash) {
@@ -492,9 +493,16 @@ bool SyncManager::handle_headers(
     if (headers.empty()) {
         GEO_METRIC_INC("sync.headers_empty_total", 1);
         const Height our_height = blockchain_->get_height();
+#ifdef GEOCOIN_MACOS_ARM64
+        // GETHEADERS can continue from a validated header whose block body is
+        // still downloading. The peer has already supplied headers to this height.
+        const Height validated_height = mark_peer_headers_exhausted(our_height);
+#else
         mark_peer_headers_exhausted(our_height);
+        const Height validated_height = our_height;
+#endif
         const Height peer_height = peer ? peer->get_info().height : 0;
-        if (peer && peer_height > our_height) {
+        if (peer && peer_height > validated_height) {
             GEO_METRIC_INC("sync.headers_empty_from_ahead_peer_total", 1);
             GEO_LOG_WARN(
                 "sync",
