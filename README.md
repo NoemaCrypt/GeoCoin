@@ -17,7 +17,7 @@ GeoCoin is a UTXO blockchain with geographic proof of work, post-quantum
 signatures, and encrypted traffic between nodes. This repository contains the
 full node, the Qt wallet, miners, database tools, and a C SDK.
 
-**Status:** public mainnet software, under active development. RPC API version **1**.
+**Status:** public mainnet (`degree`) launched September 26, 2026; under active development. RPC API version **1**.
 For exchange integration, see [the node and wallet RPC guide](docs/exchange-integration.txt).
 
 **Foundation:** the genesis subsidy (50 GC) and 10% of each block's subsidy plus
