@@ -17,6 +17,8 @@ GeoCoin is a UTXO blockchain with geographic proof of work, post-quantum
 signatures, and encrypted traffic between nodes. This repository contains the
 full node, the Qt wallet, miners, database tools, and a C SDK.
 
+> 🚀 **New to GeoCoin?** The community-made [**geocoin-start**](https://github.com/TheTimkol/geocoin-start) installer offers a guided setup and a beginner-friendly wallet for Windows 10/11 — no command line required.
+
 **Status:** public mainnet (`degree`) launched September 26, 2026; under active development. RPC API version **1**.
 For exchange integration, see [the node and wallet RPC guide](docs/exchange-integration.txt).
 
@@ -231,6 +233,8 @@ Full index: [docs/README.md](docs/README.md).
 GeoCoin — UTXO-блокчейн с географическим Proof of Work, постквантовыми
 подписями и шифрованным обменом между нодами. Репозиторий содержит полную ноду,
 Qt-кошелёк, майнеры, инструменты обслуживания базы и C SDK.
+
+> 🚀 **Только знакомитесь с GeoCoin?** Созданный сообществом установщик [**geocoin-start**](https://github.com/TheTimkol/geocoin-start) даёт пошаговую настройку и простой кошелёк для Windows 10/11 — без командной строки.
 
 **Статус:** ПО публичной основной сети, активная разработка. Версия RPC API — **1**.
 Для интеграции с биржей: [инструкция ноды и кошелечного RPC](docs/exchange-integration.txt).
