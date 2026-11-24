@@ -9,7 +9,10 @@ This folder contains build and run instructions, operational runbooks, and techn
 
 ## Operations
 
+- Operations
+
 - Production checklist: `production-mainnet.md`
+- Production test matrix (EN): `PRODUCTION_TESTING.md`
 - Production test matrix (RU): `PRODUCTION_TESTING_RU.md`
 - Seed node runbook: `seed-node-runbook.md`
 - Private soak notes: `private-soak.md`
@@ -23,6 +26,7 @@ This folder contains build and run instructions, operational runbooks, and techn
 - RPC reference (RU): `rpc/README_RU.md`
 - RPC reference (EN): `rpc/README_EN.md`
 - RPC stress tests: `rpc/STRESS_RU.md`, `rpc/STRESS_EN.md`
+- Blockchain capabilities (EN): `BLOCKCHAIN_CAPABILITIES.md`
 - Blockchain capabilities (RU): `BLOCKCHAIN_CAPABILITIES_RU.md`
 - B2B foundation / corporate issuer policy (EN): `B2B_FOUNDATION.md`
 - B2B foundation / corporate issuer policy (RU): `B2B_FOUNDATION_RU.md`

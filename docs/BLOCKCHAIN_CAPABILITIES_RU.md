@@ -1,5 +1,7 @@
 # GeoCoin: Возможности Блокчейна (L1, Кадастр, Сайдчейны)
 
+> English version: [BLOCKCHAIN_CAPABILITIES.md](BLOCKCHAIN_CAPABILITIES.md)
+
 ## 1. Что это за сеть
 
 GeoCoin — это UTXO-блокчейн с PoW-консенсусом (GeoPoW), ориентированный на:

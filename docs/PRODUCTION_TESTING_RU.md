@@ -1,5 +1,7 @@
 # Production-тестирование GeoCoin
 
+> English version: [PRODUCTION_TESTING.md](PRODUCTION_TESTING.md)
+
 ## Статус и границы утверждения
 
 Локальный четырёхнодовый прогон и весь CTest проходят. Это сильное
