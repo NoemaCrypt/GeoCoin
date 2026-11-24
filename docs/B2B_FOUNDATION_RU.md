@@ -1,5 +1,7 @@
 # B2B Foundation v1
 
+> English version: [B2B_FOUNDATION.md](B2B_FOUNDATION.md)
+
 Этот документ фиксирует contract между будущими B2B-продуктами GeoCoin и L1.
 L1 хранит идентификаторы, неизменяемые хеши, статусы, корпоративные quorum-policy
 и settlement/checkpoint события. Персональные данные, терминальная логика и

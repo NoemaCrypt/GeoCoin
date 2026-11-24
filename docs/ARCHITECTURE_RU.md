@@ -1,5 +1,8 @@
 # GeoCoin — Architecture
 
+> Русская версия: [ARCHITECTURE_RU.md](ARCHITECTURE_RU.md)
+> English version: [ARCHITECTURE.md](ARCHITECTURE.md)
+
 **Дата:** 16 апреля 2026
 
 Цель этой страницы — дать целостную картину проекта и объяснить, как данные проходят путь **p2p → validate → storage/state → rpc/wallet**. После неё читать справочник RPC проще: становится понятно, «какой слой отвечает за что».

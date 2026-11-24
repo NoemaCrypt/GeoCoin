@@ -16,13 +16,18 @@ This folder contains build and run instructions, operational runbooks, and techn
 
 ## Technical notes
 
+- Technical overview (EN): `TECHNICAL_OVERVIEW.md`
 - Technical overview (RU): `TECHNICAL_OVERVIEW_RU.md`
+- Architecture (EN): `ARCHITECTURE.md`
 - Architecture (RU): `ARCHITECTURE_RU.md`
 - RPC reference (RU): `rpc/README_RU.md`
 - RPC reference (EN): `rpc/README_EN.md`
 - RPC stress tests: `rpc/STRESS_RU.md`, `rpc/STRESS_EN.md`
 - Blockchain capabilities (RU): `BLOCKCHAIN_CAPABILITIES_RU.md`
+- B2B foundation / corporate issuer policy (EN): `B2B_FOUNDATION.md`
 - B2B foundation / corporate issuer policy (RU): `B2B_FOUNDATION_RU.md`
+- Holder dividends / interest pool (EN): `INTEREST_POOL.md`
+- Holder dividends / interest pool (RU): `INTEREST_POOL_RU.md`
 - Protocol ADRs: `../adr/`
 - Signature format implementation (Falcon-512): `../src/geocoin/crypto/signatures.cpp`
 - Witness pruning implementation: `../src/geocoin/storage/block_storage.cpp`
