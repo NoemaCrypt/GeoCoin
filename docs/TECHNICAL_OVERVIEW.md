@@ -72,6 +72,6 @@ Implementation: `../src/geocoin/storage/block_storage.cpp`,
 
 - Blockchain capabilities (RU): [BLOCKCHAIN_CAPABILITIES_RU.md](BLOCKCHAIN_CAPABILITIES_RU.md)
 - DAA and the boundaries of the PoW security model: [BLOCKCHAIN_CAPABILITIES_RU.md](BLOCKCHAIN_CAPABILITIES_RU.md)
-- SDK (`libgeo`): [`../../libgeo/README.md`](../../libgeo/README.md)
+- SDK (`libgeo`): [`../libgeo/README.md`](../libgeo/README.md)
 - Holder dividends (EN/RU): [INTEREST_POOL.md](INTEREST_POOL.md),
   [INTEREST_POOL_RU.md](INTEREST_POOL_RU.md)
