@@ -98,7 +98,17 @@ jobs:
       - name: Run Windows ctest
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          GEOCOIN_UI_TEST_OUTPUT: ${{ github.workspace }}\ui-layout-artifacts
         run: ctest --test-dir out/build/windows-clang-static-release-gui --output-on-failure -C Release
+
+      - name: Upload Windows UI layout artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ui-layout-artifacts-${{ matrix.os }}
+          path: ${{ github.workspace }}\ui-layout-artifacts
+          if-no-files-found: ignore
 
       - name: Configure libgeo Windows Static Release
         if: runner.os == 'Windows'

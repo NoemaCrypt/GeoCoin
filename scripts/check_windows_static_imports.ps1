@@ -65,6 +65,10 @@ $executables = Get-ChildItem -Path $BundleDir -Recurse -File |
 $allForbidden = New-Object System.Collections.Generic.List[string]
 
 foreach ($exe in $executables) {
+    # The bundled OpenCL ICD loader is an OS-provided redistributable: its
+    # VC-runtime imports (msvcp_win.dll) are satisfied by Windows itself on
+    # Windows 10/11, so it is exempt from the static-CRT import scan.
+    if ($exe.Name -ieq 'OpenCL.dll') { continue }
     $imports = Get-ImportsWithDumpbin $exe.FullName
     if ($null -eq $imports) {
         $imports = Get-ImportsWithLlvmObjdump $exe.FullName
