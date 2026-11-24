@@ -217,6 +217,7 @@ Environment setup is described in the [build guide](docs/build-and-run.md).
 | [B2B](docs/B2B_FOUNDATION_RU.md) | Corporate roles, cards, and metadata |
 | [Holder dividends](docs/INTEREST_POOL.md) | Interest pool after the first halving: phases, payout rules, limits |
 | [Testing](docs/PRODUCTION_TESTING_RU.md) | Scenarios under test and pass criteria |
+| [Team transparency](docs/TEAM_TRANSPARENCY.md) | Foundation governance, spending categories, and the interest pool |
 | [Operations](docs/production-mainnet.md) | Node setup and preparation for launch |
 
 Full index: [docs/README.md](docs/README.md).
@@ -436,6 +437,7 @@ CTest до упаковки. В релиз входят архивы, manifest, 
 | [B2B](docs/B2B_FOUNDATION_RU.md) | Корпоративные роли, карты и метаданные |
 | [Выплаты держателям](docs/INTEREST_POOL_RU.md) | Interest pool после первого халвинга: фазы, правила выплат, ограничения |
 | [Тестирование](docs/PRODUCTION_TESTING_RU.md) | Проверяемые сценарии и критерии прохождения |
+| [Прозрачность команды](docs/TEAM_TRANSPARENCY_RU.md) | Управление фондом, статьи расходов и interest pool |
 | [Эксплуатация](docs/production-mainnet.md) | Настройка и подготовка ноды к запуску |
 
 Полный указатель: [docs/README.md](docs/README.md).

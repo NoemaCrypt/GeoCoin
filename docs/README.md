@@ -30,6 +30,8 @@ This folder contains build and run instructions, operational runbooks, and techn
 - Blockchain capabilities (RU): `BLOCKCHAIN_CAPABILITIES_RU.md`
 - B2B foundation / corporate issuer policy (EN): `B2B_FOUNDATION.md`
 - B2B foundation / corporate issuer policy (RU): `B2B_FOUNDATION_RU.md`
+- Team transparency (EN): `TEAM_TRANSPARENCY.md`
+- Team transparency (RU): `TEAM_TRANSPARENCY_RU.md`
 - Holder dividends / interest pool (EN): `INTEREST_POOL.md`
 - Holder dividends / interest pool (RU): `INTEREST_POOL_RU.md`
 - Protocol ADRs: `../adr/`
