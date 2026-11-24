@@ -58,6 +58,10 @@ add_test(NAME test_architecture_checker COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_architecture_checker.py")
 set_tests_properties(test_architecture_boundaries test_architecture_checker PROPERTIES LABELS "architecture;unit")
 
+add_test(NAME test_documentation_sync COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_documentation_sync.py")
+set_tests_properties(test_documentation_sync PROPERTIES LABELS "docs;unit" TIMEOUT 60)
+
 add_test(NAME test_geographiclib_build COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geographiclib_build.py")
 set_tests_properties(test_geographiclib_build PROPERTIES LABELS "geography;build;unit" TIMEOUT 60)
