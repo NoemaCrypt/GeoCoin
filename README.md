@@ -213,7 +213,7 @@ Environment setup is described in the [build guide](docs/build-and-run.md).
 | [Architecture](docs/ARCHITECTURE_RU.md) | Project layers and how the components fit together |
 | [Protocol and ADRs](adr/README.md) | Authorization, identifiers, checkpoints, and finality |
 | [B2B](docs/B2B_FOUNDATION_RU.md) | Corporate roles, cards, and metadata |
-| [Holder dividends](docs/INTEREST_POOL_RU.md) | Interest pool after the first halving: phases, payout rules, limits |
+| [Holder dividends](docs/INTEREST_POOL.md) | Interest pool after the first halving: phases, payout rules, limits |
 | [Testing](docs/PRODUCTION_TESTING_RU.md) | Scenarios under test and pass criteria |
 | [Operations](docs/production-mainnet.md) | Node setup and preparation for launch |
 
